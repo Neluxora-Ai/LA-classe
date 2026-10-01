@@ -23,7 +23,17 @@
       </div>
       <form id="auth-form">
         <label>Pseudo<input id="pseudo" maxlength="20" required autocomplete="username"></label>
-        <label>Mot de passe<input id="password" type="password" minlength="6" required autocomplete="current-password"></label>
+        <label>Mot de passe
+          <span class="pw"><input id="password" type="password" required autocomplete="current-password"><button type="button" class="eye" data-eye="password" aria-label="Afficher le mot de passe" title="Afficher / masquer">👁</button></span>
+        </label>
+        <div id="strength" class="strength" hidden>
+          <div class="strength-bar"><span id="strength-fill"></span></div>
+          <span id="strength-text" class="hint"></span>
+        </div>
+        <label id="password2-label" hidden>Confirmer le mot de passe
+          <span class="pw"><input id="password2" type="password" autocomplete="new-password"><button type="button" class="eye" data-eye="password2" aria-label="Afficher le mot de passe" title="Afficher / masquer">👁</button></span>
+          <span id="match-text" class="hint"></span>
+        </label>
         <label id="code-label" hidden>Code de classe<input id="code" placeholder="demande-le à celui qui a créé le site" autocomplete="off"></label>
         <p id="auth-error" class="error" role="alert"></p>
         <button id="auth-submit" class="btn-primary" type="submit">Entrer 🚀</button>
@@ -41,11 +51,15 @@
       <h2>Mes groupes <button id="new-room" class="mini-btn" title="Créer un groupe">＋</button></h2>
       <nav id="private-rooms"></nav>
       <p id="no-groups" class="hint">Pas encore de groupe. Clique sur ＋ pour en créer un et choisir qui y ajouter.</p>
+      <h2>Messages privés <button id="new-dm" class="mini-btn" title="Nouveau message privé">＋</button></h2>
+      <nav id="dm-rooms"></nav>
+      <p id="no-dms" class="hint">Clique sur ＋ ou sur un pseudo « En ligne » pour écrire à quelqu'un.</p>
       <h2>En ligne <span id="online-count"></span></h2>
       <ul id="online"></ul>
       <div class="me">
         <span id="me-avatar" class="avatar"></span>
         <span id="me-name"></span>
+        <button id="profile-btn" class="icon-btn" title="Mon profil et réglages">⚙</button>
         <button id="logout" class="icon-btn" title="Se déconnecter">⏻</button>
       </div>
     </aside>
@@ -60,6 +74,10 @@
       <div id="messages" class="messages" aria-live="polite"></div>
       <div id="typing" class="typing"></div>
       <div id="emoji-panel" class="emoji-panel" hidden></div>
+      <div id="reply-bar" class="reply-bar" hidden>
+        <span class="reply-text"><span id="reply-name"></span> <span id="reply-snippet"></span></span>
+        <button type="button" id="reply-cancel" class="icon-btn" title="Annuler la réponse">✕</button>
+      </div>
       <form id="composer" class="composer">
         <button type="button" id="emoji-btn" class="icon-btn" title="Emojis">😊</button>
         <button type="button" id="img-btn" class="icon-btn" title="Envoyer une image">📎</button>
@@ -98,6 +116,52 @@
     <p id="members-error" class="error"></p>
     <div class="dlg-actions">
       <button type="button" id="leave-btn" class="btn-danger">Quitter le groupe</button>
+      <button type="button" class="btn-ghost" data-close>Fermer</button>
+    </div>
+  </dialog>
+
+  <!-- Nouveau message privé -->
+  <dialog id="dlg-dm">
+    <h3>Nouveau message privé 💬</h3>
+    <div id="dm-people" class="people"></div>
+    <p id="dm-error" class="error"></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn-ghost" data-close>Fermer</button>
+    </div>
+  </dialog>
+
+  <!-- Profil -->
+  <dialog id="dlg-profile">
+    <h3>Mon profil ⚙</h3>
+    <div class="profile-head">
+      <span id="profile-avatar" class="avatar"></span>
+      <b id="profile-name"></b>
+      <span id="profile-admin" class="admin-badge" hidden>👑 admin</span>
+    </div>
+
+    <div class="field-label">Couleur de l'avatar</div>
+    <div id="color-choice" class="color-choice"></div>
+
+    <div class="field-label">Notifications</div>
+    <label class="check"><input type="checkbox" id="pref-sound"> Son quand je reçois un message</label>
+    <label class="check"><input type="checkbox" id="pref-desktop"> Notifications du navigateur <span id="pref-desktop-hint" class="hint"></span></label>
+
+    <form id="pw-form" class="pw-form">
+      <div class="field-label">Changer mon mot de passe</div>
+      <label>Mot de passe actuel
+        <span class="pw"><input id="pw-old" type="password" autocomplete="current-password"><button type="button" class="eye" data-eye="pw-old" aria-label="Afficher" title="Afficher / masquer">👁</button></span>
+      </label>
+      <label>Nouveau mot de passe
+        <span class="pw"><input id="pw-new" type="password" autocomplete="new-password"><button type="button" class="eye" data-eye="pw-new" aria-label="Afficher" title="Afficher / masquer">👁</button></span>
+      </label>
+      <label>Confirmer le nouveau mot de passe
+        <span class="pw"><input id="pw-new2" type="password" autocomplete="new-password"><button type="button" class="eye" data-eye="pw-new2" aria-label="Afficher" title="Afficher / masquer">👁</button></span>
+      </label>
+      <p id="pw-msg" class="error"></p>
+      <button type="submit" class="btn-ghost">Changer le mot de passe</button>
+    </form>
+
+    <div class="dlg-actions">
       <button type="button" class="btn-ghost" data-close>Fermer</button>
     </div>
   </dialog>

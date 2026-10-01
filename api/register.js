@@ -47,7 +47,7 @@ export default async function handler(req, res) {
 
   const name = pseudo.trim();
   if (!PSEUDO_RE.test(name)) return res.status(400).json({ error: 'Pseudo : 2 à 20 lettres, chiffres, espaces, - ou _.' });
-  if (password.length < 6 || password.length > 72) return res.status(400).json({ error: 'Mot de passe : entre 6 et 72 caractères.' });
+  if (password.length < 8 || password.length > 72) return res.status(400).json({ error: 'Mot de passe : entre 8 et 72 caractères.' });
 
   const { data, error } = await admin.auth.admin.createUser({
     email: pseudoToEmail(name),
