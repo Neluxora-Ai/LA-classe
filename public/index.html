@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>La Classe 🎒</title>
+  <meta name="theme-color" content="#15131f">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🎒%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="demo-banner" class="demo-banner" hidden>🧪 Mode démo : tout reste dans ton navigateur. Ouvre un 2<sup>e</sup> onglet avec un autre compte pour tester. Code de classe : <b>demo</b></div>
+
+  <!-- Écran de connexion -->
+  <main id="auth" class="auth" hidden>
+    <div class="auth-card">
+      <div class="logo">🎒</div>
+      <h1>La Classe</h1>
+      <p class="tagline">Le QG de la classe. Un salon pour tous, des groupes pour les potes.</p>
+      <div class="tabs">
+        <button type="button" id="tab-login" class="tab active">Connexion</button>
+        <button type="button" id="tab-register" class="tab">Créer un compte</button>
+      </div>
+      <form id="auth-form">
+        <label>Pseudo<input id="pseudo" maxlength="20" required autocomplete="username"></label>
+        <label>Mot de passe<input id="password" type="password" minlength="6" required autocomplete="current-password"></label>
+        <label id="code-label" hidden>Code de classe<input id="code" placeholder="demande-le à celui qui a créé le site" autocomplete="off"></label>
+        <p id="auth-error" class="error" role="alert"></p>
+        <button id="auth-submit" class="btn-primary" type="submit">Entrer 🚀</button>
+      </form>
+    </div>
+  </main>
+
+  <!-- Chat -->
+  <div id="app" class="app" hidden>
+    <div id="scrim" class="scrim" hidden></div>
+    <aside id="sidebar" class="sidebar">
+      <div class="brand">🎒 La Classe</div>
+      <h2>Salon commun</h2>
+      <nav id="common-room"></nav>
+      <h2>Mes groupes <button id="new-room" class="mini-btn" title="Créer un groupe">＋</button></h2>
+      <nav id="private-rooms"></nav>
+      <p id="no-groups" class="hint">Pas encore de groupe. Clique sur ＋ pour en créer un et choisir qui y ajouter.</p>
+      <h2>En ligne <span id="online-count"></span></h2>
+      <ul id="online"></ul>
+      <div class="me">
+        <span id="me-avatar" class="avatar"></span>
+        <span id="me-name"></span>
+        <button id="logout" class="icon-btn" title="Se déconnecter">⏻</button>
+      </div>
+    </aside>
+
+    <section class="chat">
+      <header class="chat-head">
+        <button id="menu" class="icon-btn menu-btn" title="Salons">☰</button>
+        <span id="room-title"></span>
+        <button id="members-btn" class="pill" title="Membres du salon">👥 <span id="members-count"></span></button>
+        <span id="conn" class="conn off" title="Connexion"></span>
+      </header>
+      <div id="messages" class="messages" aria-live="polite"></div>
+      <div id="typing" class="typing"></div>
+      <div id="emoji-panel" class="emoji-panel" hidden></div>
+      <form id="composer" class="composer">
+        <button type="button" id="emoji-btn" class="icon-btn" title="Emojis">😊</button>
+        <button type="button" id="img-btn" class="icon-btn" title="Envoyer une image">📎</button>
+        <input type="file" id="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+        <input id="text" maxlength="1000" placeholder="Écris un message… (tu peux coller une image)" autocomplete="off">
+        <button class="btn-primary send" type="submit">Envoyer</button>
+      </form>
+    </section>
+  </div>
+
+  <!-- Créer un groupe -->
+  <dialog id="dlg-create">
+    <form method="dialog" id="create-form">
+      <h3>Nouveau groupe 🔒</h3>
+      <label>Nom<input id="room-name" maxlength="30" required placeholder="ex. Les révisions de maths"></label>
+      <div class="field-label">Icône</div>
+      <div id="emoji-choice" class="emoji-choice"></div>
+      <div class="field-label">Qui ajouter ? <span class="hint">(tu pourras en ajouter d'autres plus tard)</span></div>
+      <div id="create-people" class="people"></div>
+      <p id="create-error" class="error"></p>
+      <div class="dlg-actions">
+        <button type="button" class="btn-ghost" data-close>Annuler</button>
+        <button type="submit" class="btn-primary">Créer le groupe</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Membres -->
+  <dialog id="dlg-members">
+    <h3 id="members-title">Membres</h3>
+    <div id="members-list" class="people"></div>
+    <div id="add-section">
+      <div class="field-label">Ajouter quelqu'un</div>
+      <div id="add-people" class="people"></div>
+    </div>
+    <p id="members-error" class="error"></p>
+    <div class="dlg-actions">
+      <button type="button" id="leave-btn" class="btn-danger">Quitter le groupe</button>
+      <button type="button" class="btn-ghost" data-close>Fermer</button>
+    </div>
+  </dialog>
+
+  <div id="lightbox" class="lightbox" hidden><img alt=""></div>
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/config.js"></script>
+  <script src="/vendor/supabase.js"></script>
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

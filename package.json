@@ -1,0 +1,16 @@
+{
+  "name": "site-classe",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Chat de classe : salon commun + groupes privés. Vercel + Supabase.",
+  "scripts": {
+    "dev": "node dev.js",
+    "vendor": "node scripts/vendor.js",
+    "postinstall": "node scripts/vendor.js"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  }
+}
