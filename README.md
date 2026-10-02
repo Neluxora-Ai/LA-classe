@@ -18,7 +18,8 @@ code de classe : `demo`). Ouvre un 2ᵉ onglet et crée un 2ᵉ compte pour voir
 ### 1. Créer le projet Supabase
 1. Crée un compte sur https://supabase.com → **New project** (choisis une région proche, ex. Paris/Frankfurt, et un mot de passe de base de données).
 2. **SQL Editor → New query** : colle tout le contenu de [`supabase/schema.sql`](supabase/schema.sql) → **Run**.
-   Puis une 2ᵉ requête avec [`supabase/v3.sql`](supabase/v3.sql) → **Run** (profil, réactions, réponses, messages privés, admin).
+   Puis une 2ᵉ requête avec [`supabase/v3.sql`](supabase/v3.sql) → **Run** (profil, réactions, réponses, messages privés, admin),
+   puis une 3ᵉ avec [`supabase/v4.sql`](supabase/v4.sql) → **Run** (photo de profil, bannissement).
 3. **Authentication → Sign In / Providers** : **désactive « Allow new users to sign up »**.
    ⚠️ Indispensable : sinon n'importe qui pourrait créer un compte en contournant le code de classe.
 4. **Project Settings → API** : note
@@ -58,16 +59,24 @@ puis `npm run dev`.
   (bouton 👥). Quand le dernier membre part, le groupe est supprimé.
 - **Messages privés** : clique sur un pseudo « En ligne » (ou sur le nom d'un auteur, ou sur ＋ dans « Messages privés »). Une seule conversation par paire de personnes.
 - **Réactions et réponses** : passe la souris sur un message (ou appuie dessus sur téléphone) → 😊 réagir, ↩ répondre, 🗑 supprimer.
-- **Profil (⚙)** : couleur de l'avatar, changement de mot de passe, son et notifications du navigateur (réglages gardés dans ton navigateur).
+- **Profil (⚙)** : photo de profil (recadrée en carré 256 px, 5 Mo max avant réduction), couleur de l'avatar si pas de photo,
+  changement de mot de passe, son et notifications du navigateur (réglages gardés dans ton navigateur).
 - **Inscription** : passe par `api/register.js` (fonction Vercel) qui vérifie le code de classe (avec limite d'essais par IP).
   Mot de passe de **8 caractères minimum**, saisi **deux fois**, avec barre de force et bouton œil.
 - **Connexion** : pseudo + mot de passe (Supabase Auth, mots de passe hachés par Supabase).
 
 ## Admin
 
-Un admin peut supprimer n'importe quel message et **supprimer un compte** (👥 Membres du salon commun → « Supprimer le compte » :
-le compte, ses messages et ses réactions sont effacés ; la personne pourrait se réinscrire avec le code de classe, change-le si besoin).
-Un admin ne peut pas supprimer un autre admin ni son propre compte.
+Un admin peut supprimer n'importe quel message et gérer les comptes depuis le **panneau admin 🛡** (barre latérale) :
+- **Supprimer** : le compte, ses messages et ses réactions sont effacés ; la personne peut se réinscrire avec le code de classe.
+- **Bannir** : pareil, et en plus le pseudo ne peut plus créer de compte (même avec des majuscules). Raison facultative, visible seulement des admins.
+- **Débannir** : redonne le droit de s'inscrire.
+
+Limite du bannissement : il porte sur le **pseudo**. Quelqu'un de déterminé peut s'inscrire avec un autre pseudo
+(on ne bannit pas par adresse IP, pour ne pas bloquer toute une classe sur le même Wi-Fi). Dans ce cas, **change le code de classe**
+(variable `CLASS_CODE` dans Vercel, puis redéploie).
+
+Un admin ne peut ni supprimer/bannir un autre admin, ni lui-même.
 
 Pour nommer un admin, dans Supabase → SQL Editor :
 ```sql

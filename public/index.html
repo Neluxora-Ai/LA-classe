@@ -59,6 +59,7 @@
       <div class="me">
         <span id="me-avatar" class="avatar"></span>
         <span id="me-name"></span>
+        <button id="admin-btn" class="icon-btn" title="Panneau admin" hidden>🛡</button>
         <button id="profile-btn" class="icon-btn" title="Mon profil et réglages">⚙</button>
         <button id="logout" class="icon-btn" title="Se déconnecter">⏻</button>
       </div>
@@ -130,6 +131,19 @@
     </div>
   </dialog>
 
+  <!-- Panneau admin -->
+  <dialog id="dlg-admin">
+    <h3>Panneau admin 🛡</h3>
+    <div class="field-label">Comptes</div>
+    <div id="admin-users" class="people"></div>
+    <div class="field-label">Pseudos bannis <span class="hint">(ils ne peuvent plus créer de compte)</span></div>
+    <div id="admin-banned" class="people"></div>
+    <p id="admin-error" class="error"></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn-ghost" data-close>Fermer</button>
+    </div>
+  </dialog>
+
   <!-- Profil -->
   <dialog id="dlg-profile">
     <h3>Mon profil ⚙</h3>
@@ -139,7 +153,14 @@
       <span id="profile-admin" class="admin-badge" hidden>👑 admin</span>
     </div>
 
-    <div class="field-label">Couleur de l'avatar</div>
+    <div class="avatar-actions">
+      <button type="button" id="avatar-btn" class="btn-ghost">📷 Changer la photo</button>
+      <button type="button" id="avatar-remove" class="btn-ghost" hidden>Retirer la photo</button>
+      <input type="file" id="avatar-file" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+    </div>
+    <p id="avatar-msg" class="error"></p>
+
+    <div class="field-label">Couleur de l'avatar (si pas de photo)</div>
     <div id="color-choice" class="color-choice"></div>
 
     <div class="field-label">Notifications</div>

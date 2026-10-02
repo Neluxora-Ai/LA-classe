@@ -49,6 +49,9 @@ export default async function handler(req, res) {
   if (!PSEUDO_RE.test(name)) return res.status(400).json({ error: 'Pseudo : 2 à 20 lettres, chiffres, espaces, - ou _.' });
   if (password.length < 8 || password.length > 72) return res.status(400).json({ error: 'Mot de passe : entre 8 et 72 caractères.' });
 
+  const { data: banned } = await admin.from('banned_users').select('pseudo_key').eq('pseudo_key', name.toLowerCase()).maybeSingle();
+  if (banned) return res.status(403).json({ error: 'Ce pseudo a été banni de la classe.' });
+
   const { data, error } = await admin.auth.admin.createUser({
     email: pseudoToEmail(name),
     password,

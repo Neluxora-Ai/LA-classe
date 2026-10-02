@@ -18,11 +18,25 @@ export function createSupabaseBackend({ url, key }) {
   };
   const pseudoOf = (id) => profiles.get(id)?.pseudo || '???';
 
+  // Photos de profil : fichiers privés, affichés via des liens signés gardés en cache (~50 min).
+  const avatarSigned = new Map(); // path -> { url, exp }
+  let avatars = new Map(); // pseudo -> url signée
+  async function signAvatars(list) {
+    const now = Date.now();
+    const need = [...new Set(list.map((p) => p.avatar_path).filter(Boolean))].filter((path) => !(avatarSigned.get(path)?.exp > now));
+    if (need.length) {
+      const { data, error } = await sb.storage.from('images').createSignedUrls(need, 3600);
+      if (!error) for (const r of data) if (r.signedUrl) avatarSigned.set(r.path, { url: r.signedUrl, exp: now + 50 * 60_000 });
+    }
+    avatars = new Map(list.filter((p) => p.avatar_path && avatarSigned.has(p.avatar_path)).map((p) => [p.pseudo, avatarSigned.get(p.avatar_path).url]));
+  }
+
   async function loadProfiles() {
-    const { data, error } = await sb.from('profiles').select('id, pseudo, color, is_admin');
+    const { data, error } = await sb.from('profiles').select('id, pseudo, color, is_admin, avatar_path');
     fail(error);
-    profiles = new Map(data.map((p) => [p.id, { pseudo: p.pseudo, color: p.color, is_admin: p.is_admin }]));
+    profiles = new Map(data.map((p) => [p.id, { pseudo: p.pseudo, color: p.color, is_admin: p.is_admin, avatar_path: p.avatar_path }]));
     colors = new Map(data.filter((p) => p.color).map((p) => [p.pseudo, p.color]));
+    await signAvatars(data);
     if (me && profiles.has(me.id)) Object.assign(me, { color: profiles.get(me.id).color, is_admin: profiles.get(me.id).is_admin });
     return profiles;
   }
@@ -96,6 +110,40 @@ export function createSupabaseBackend({ url, key }) {
     async setColor(color) {
       fail((await sb.rpc('set_my_color', { p_color: color })).error);
       await loadProfiles();
+    },
+
+    avatar: (pseudo) => avatars.get(pseudo) || '',
+    async setAvatar(blob) {
+      const old = profiles.get(me.id)?.avatar_path;
+      const path = `${me.id}/${crypto.randomUUID()}.jpg`;
+      const { error } = await sb.storage.from('images').upload(path, blob, { contentType: 'image/jpeg' });
+      fail(error);
+      const { error: e2 } = await sb.rpc('set_my_avatar', { p_path: path });
+      if (e2) {
+        sb.storage.from('images').remove([path]);
+        fail(e2);
+      }
+      if (old) sb.storage.from('images').remove([old]);
+      await loadProfiles();
+    },
+    async removeAvatar() {
+      const old = profiles.get(me.id)?.avatar_path;
+      fail((await sb.rpc('set_my_avatar', { p_path: '' })).error);
+      if (old) sb.storage.from('images').remove([old]);
+      await loadProfiles();
+    },
+
+    async ban(userId, reason) {
+      fail((await sb.rpc('admin_ban', { p_user: userId, p_reason: reason || '' })).error);
+      await loadProfiles();
+    },
+    async unban(pseudoKey) {
+      fail((await sb.rpc('admin_unban', { p_key: pseudoKey })).error);
+    },
+    async banned() {
+      const { data, error } = await sb.from('banned_users').select('pseudo_key, pseudo, reason, banned_at').order('banned_at', { ascending: false });
+      fail(error);
+      return data;
     },
 
     people: () =>

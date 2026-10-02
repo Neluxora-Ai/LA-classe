@@ -1,6 +1,6 @@
 import { createSupabaseBackend } from './backend-supabase.js';
 import { createDemoBackend } from './backend-demo.js';
-import { AVATAR_COLORS, MIN_PASSWORD, QUICK_REACTIONS, passwordStrength } from './shared.js';
+import { AVATAR_COLORS, MIN_PASSWORD, QUICK_REACTIONS, passwordStrength, resizeAvatar } from './shared.js';
 
 const $ = (id) => document.getElementById(id);
 const cfg = window.APP_CONFIG || {};
@@ -57,7 +57,20 @@ function makeAvatar(name, size) {
   el.className = 'avatar';
   el.style.background = colorOf(name);
   if (size) Object.assign(el.style, { width: `${size}px`, height: `${size}px` });
-  el.textContent = [...name][0].toUpperCase();
+  const initial = [...name][0].toUpperCase();
+  const photo = b.avatar(name);
+  if (photo) {
+    const img = document.createElement('img');
+    img.alt = '';
+    img.src = photo;
+    img.onerror = () => { // lien expiré : on retombe sur l'initiale
+      img.remove();
+      el.textContent = initial;
+    };
+    el.append(img);
+  } else {
+    el.textContent = initial;
+  }
   return el;
 }
 function toast(text) {
@@ -208,6 +221,7 @@ async function enterApp(user) {
   syncMe();
   $('auth').hidden = true;
   $('app').hidden = false;
+  $('admin-btn').hidden = !isAdmin();
   renderMeAvatar();
   buildEmojis();
   bindEvents();
@@ -851,13 +865,51 @@ function renderColorChoice() {
       syncMe();
       renderMeAvatar();
       renderColorChoice();
-      $('profile-avatar').replaceWith(Object.assign(makeAvatar(me.pseudo), { id: 'profile-avatar' }));
+      renderProfileAvatar();
       showHistory();
     });
     return btn;
   };
   wrap.replaceChildren(make(''), ...AVATAR_COLORS.map(make));
 }
+function renderProfileAvatar() {
+  $('profile-avatar').replaceWith(Object.assign(makeAvatar(me.pseudo), { id: 'profile-avatar' }));
+  $('avatar-remove').hidden = !b.avatar(me.pseudo);
+}
+function avatarMsg(text, ok = false) {
+  const el = $('avatar-msg');
+  el.className = ok ? 'ok' : 'error';
+  el.textContent = text;
+}
+$('avatar-btn').onclick = () => $('avatar-file').click();
+$('avatar-file').onchange = async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  avatarMsg('Envoi de la photo…', true);
+  try {
+    await b.setAvatar(await resizeAvatar(file));
+    syncMe();
+    renderMeAvatar();
+    renderProfileAvatar();
+    showHistory();
+    avatarMsg('Photo mise à jour ✅', true);
+  } catch (err) {
+    avatarMsg(err.message);
+  }
+};
+$('avatar-remove').onclick = async () => {
+  try {
+    await b.removeAvatar();
+    syncMe();
+    renderMeAvatar();
+    renderProfileAvatar();
+    showHistory();
+    avatarMsg('Photo retirée.', true);
+  } catch (err) {
+    avatarMsg(err.message);
+  }
+};
 function renderDesktopHint() {
   const hint = $('pref-desktop-hint');
   if (!('Notification' in window)) hint.textContent = '(non supporté par ce navigateur)';
@@ -867,7 +919,8 @@ function renderDesktopHint() {
 $('profile-btn').onclick = guard(async () => {
   await b.refreshPeople();
   syncMe();
-  $('profile-avatar').replaceWith(Object.assign(makeAvatar(me.pseudo), { id: 'profile-avatar' }));
+  renderProfileAvatar();
+  avatarMsg('');
   $('profile-name').textContent = me.pseudo;
   $('profile-admin').hidden = !isAdmin();
   renderColorChoice();
@@ -927,6 +980,111 @@ $('pw-form').addEventListener('submit', async (e) => {
   } catch (err) {
     fail(err.message);
   }
+});
+
+// ---------- Panneau admin : comptes, suppression, bannissement ----------
+const dlgAdmin = $('dlg-admin');
+const adminError = (text = '') => ($('admin-error').textContent = text);
+async function renderAdminPanel() {
+  await b.refreshPeople();
+  syncMe();
+  const refreshAll = async () => {
+    await renderAdminPanel();
+    updateMembersCount();
+    showHistory();
+  };
+
+  $('admin-users').replaceChildren(...b.people().map((p) => {
+    const row = personRow(p);
+    if (p.id === me.id || p.is_admin) return row;
+    const actions = document.createElement('span');
+    actions.className = 'row-actions';
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'kick';
+    del.textContent = 'Supprimer';
+    del.title = 'Supprime le compte et ses messages (la personne peut se réinscrire)';
+    del.onclick = async () => {
+      if (!confirm(`Supprimer le compte de « ${p.pseudo} » ? Son compte, ses messages et ses réactions seront effacés définitivement.\n(La personne pourra se réinscrire avec le code de classe. Pour l'en empêcher, utilise « Bannir ».)`)) return;
+      try {
+        adminError();
+        await b.kick(p.id);
+        await refreshAll();
+      } catch (err) {
+        adminError(err.message);
+      }
+    };
+
+    const ban = document.createElement('button');
+    ban.type = 'button';
+    ban.className = 'ban';
+    ban.textContent = 'Bannir';
+    ban.title = 'Supprime le compte ET interdit ce pseudo de se réinscrire';
+    ban.onclick = async () => {
+      const reason = prompt(`Bannir « ${p.pseudo} » ?\nSon compte et ses messages seront supprimés, et ce pseudo ne pourra plus créer de compte.\n\nRaison (facultatif, visible seulement par les admins) :`, '');
+      if (reason === null) return;
+      try {
+        adminError();
+        await b.ban(p.id, reason.trim());
+        await refreshAll();
+      } catch (err) {
+        adminError(err.message);
+      }
+    };
+
+    actions.append(del, ban);
+    row.append(actions);
+    return row;
+  }));
+
+  let bans = [];
+  try {
+    bans = await b.banned();
+  } catch (err) {
+    adminError(err.message);
+  }
+  if (!bans.length) {
+    const none = document.createElement('div');
+    none.className = 'person';
+    none.textContent = "Personne n'est banni.";
+    none.style.color = 'var(--muted)';
+    $('admin-banned').replaceChildren(none);
+    return;
+  }
+  $('admin-banned').replaceChildren(...bans.map((x) => {
+    const row = document.createElement('div');
+    row.className = 'person';
+    const who = document.createElement('span');
+    who.className = 'who';
+    const name = document.createElement('span');
+    name.textContent = x.pseudo;
+    const why = document.createElement('span');
+    why.className = 'why';
+    why.textContent = `${new Date(x.banned_at).toLocaleDateString('fr-FR')}${x.reason ? ` · ${x.reason}` : ''}`;
+    who.append(name, why);
+    const undo = document.createElement('button');
+    undo.type = 'button';
+    undo.className = 'add';
+    undo.textContent = 'Débannir';
+    undo.onclick = async () => {
+      if (!confirm(`Débannir « ${x.pseudo} » ? Ce pseudo pourra de nouveau créer un compte.`)) return;
+      try {
+        adminError();
+        await b.unban(x.pseudo_key);
+        await renderAdminPanel();
+      } catch (err) {
+        adminError(err.message);
+      }
+    };
+    row.append(who, undo);
+    return row;
+  }));
+}
+$('admin-btn').onclick = guard(async () => {
+  adminError();
+  await renderAdminPanel();
+  dlgAdmin.showModal();
 });
 
 boot();

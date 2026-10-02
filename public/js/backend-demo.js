@@ -28,6 +28,7 @@ export function createDemoBackend() {
       nextId: 1,
     };
     s.reactions ||= []; // anciennes données de démo
+    s.bans ||= [];
     return s;
   };
   const save = (s) => localStorage.setItem(KEY, JSON.stringify(s));
@@ -90,6 +91,7 @@ export function createDemoBackend() {
       if (!PSEUDO_RE.test(pseudo)) throw new Error('Pseudo : 2 à 20 lettres, chiffres, espaces, - ou _.');
       if (password.length < MIN_PASSWORD) throw new Error(`Mot de passe : ${MIN_PASSWORD} caractères minimum.`);
       const s = load();
+      if (s.bans.some((x) => x.pseudo_key === pseudo.toLowerCase())) throw new Error('Ce pseudo a été banni de la classe.');
       if (s.users.some((u) => u.pseudo.toLowerCase() === pseudo.toLowerCase())) throw new Error('Ce pseudo est déjà pris.');
       s.users.push({ id: crypto.randomUUID(), pseudo, password, color: '', is_admin: s.users.length === 0 });
       save(s);
@@ -120,6 +122,46 @@ export function createDemoBackend() {
       userOf(s, me.id).color = color;
       save(s);
       refreshMe(s);
+    },
+
+    avatar: (pseudo) => load().users.find((u) => u.pseudo === pseudo)?.avatar || '',
+    async setAvatar(blob) {
+      const url = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = () => reject(new Error('Lecture impossible.'));
+        r.readAsDataURL(blob);
+      });
+      const s = load();
+      userOf(s, me.id).avatar = url;
+      save(s);
+    },
+    async removeAvatar() {
+      const s = load();
+      delete userOf(s, me.id).avatar;
+      save(s);
+    },
+
+    async ban(userId, reason) {
+      const s = load();
+      const target = userOf(s, userId);
+      if (!userOf(s, me.id)?.is_admin) throw new Error('Interdit.');
+      if (userId === me.id) throw new Error('Tu ne peux pas te bannir toi-même.');
+      if (!target) throw new Error('Utilisateur inconnu.');
+      if (target.is_admin) throw new Error('Impossible de bannir un admin.');
+      s.bans = s.bans.filter((x) => x.pseudo_key !== target.pseudo.toLowerCase());
+      s.bans.unshift({ pseudo_key: target.pseudo.toLowerCase(), pseudo: target.pseudo, reason: (reason || '').slice(0, 200), banned_at: new Date().toISOString() });
+      save(s);
+      await this.kick(userId);
+    },
+    async unban(pseudoKey) {
+      const s = load();
+      if (!userOf(s, me.id)?.is_admin) throw new Error('Interdit.');
+      s.bans = s.bans.filter((x) => x.pseudo_key !== pseudoKey.toLowerCase());
+      save(s);
+    },
+    async banned() {
+      return load().bans;
     },
 
     people: () => load().users.map(pub).sort((a, b) => a.pseudo.localeCompare(b.pseudo)),
