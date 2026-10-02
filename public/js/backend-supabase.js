@@ -1,6 +1,7 @@
 import { FILE_TYPES, IMAGE_EXT, MAX_FILE, MAX_IMAGE, MIN_PASSWORD, fileExt, mkEmitter, pseudoToEmail } from './shared.js';
 
-const MSG_COLS = 'id, room_id, user_id, text, image_path, created_at, reply_to, edited_at, file_path, file_name, file_size';
+const MSG_COLS = 'id, room_id, user_id, text, image_path, created_at, reply_to, edited_at, file_path, file_name, file_size, sticker_id';
+const PROFILE_COLS = 'id, pseudo, color, is_admin, avatar_path, settings, nickname, bio, status, birthday, interests, last_seen';
 
 export function createSupabaseBackend({ url, key }) {
   const sb = window.supabase.createClient(url, key, {
@@ -34,14 +35,14 @@ export function createSupabaseBackend({ url, key }) {
   }
 
   async function loadProfiles() {
-    const { data, error } = await sb.from('profiles').select('id, pseudo, color, is_admin, avatar_path, settings');
+    const { data, error } = await sb.from('profiles').select(PROFILE_COLS);
     fail(error);
-    profiles = new Map(data.map((p) => [p.id, { pseudo: p.pseudo, color: p.color, is_admin: p.is_admin, avatar_path: p.avatar_path, settings: p.settings || {} }]));
+    profiles = new Map(data.map((p) => [p.id, { ...p, settings: p.settings || {} }]));
     colors = new Map(data.filter((p) => p.color).map((p) => [p.pseudo, p.color]));
     await signAvatars(data);
     if (me && profiles.has(me.id)) {
       const mine = profiles.get(me.id);
-      Object.assign(me, { color: mine.color, is_admin: mine.is_admin, settings: mine.settings });
+      Object.assign(me, { pseudo: mine.pseudo, color: mine.color, is_admin: mine.is_admin, settings: mine.settings, nickname: mine.nickname });
     }
     return profiles;
   }
@@ -60,7 +61,22 @@ export function createSupabaseBackend({ url, key }) {
     fail(error);
     data.forEach(remember);
   }
-  const full = (m, reactions = [], poll = null) => ({ ...m, pseudo: pseudoOf(m.user_id), reactions, reply: replyInfo(m.reply_to), poll });
+  // Stickers de la classe (images ajoutées par les admins), gardés pour afficher les anciens messages
+  let stickerMap = new Map(); // id -> { id, name, path, active }
+  async function loadStickers() {
+    const { data, error } = await sb.from('stickers').select('id, name, path, active').order('created_at');
+    fail(error);
+    stickerMap = new Map(data.map((s) => [s.id, s]));
+    return data;
+  }
+  const full = (m, reactions = [], poll = null) => ({
+    ...m,
+    pseudo: pseudoOf(m.user_id),
+    reactions,
+    reply: replyInfo(m.reply_to),
+    poll,
+    sticker: m.sticker_id ? stickerMap.get(m.sticker_id) || null : null,
+  });
 
   // Sondages : question + choix + votes, regroupés par message
   async function loadPolls(messageIds) {
@@ -185,10 +201,87 @@ export function createSupabaseBackend({ url, key }) {
       return data;
     },
 
+    // Profil
     people: () =>
       [...profiles]
-        .map(([id, p]) => ({ id, pseudo: p.pseudo, color: p.color, is_admin: p.is_admin }))
+        .map(([id, p]) => ({ id, pseudo: p.pseudo, color: p.color, is_admin: p.is_admin, nickname: p.nickname, status: p.status, birthday: p.birthday, last_seen: p.last_seen, lastSeenHidden: p.settings?.lastseen === 'off' }))
         .sort((a, b) => a.pseudo.localeCompare(b.pseudo)),
+    // Fiche complète d'une personne (bio, anniversaire, dernière connexion…)
+    profile: (id) => {
+      const p = profiles.get(id);
+      return p ? { id, pseudo: p.pseudo, color: p.color, is_admin: p.is_admin, nickname: p.nickname, status: p.status, bio: p.bio, birthday: p.birthday, interests: p.interests, last_seen: p.last_seen, lastSeenHidden: p.settings?.lastseen === 'off' } : null;
+    },
+    async setProfile({ nickname = '', bio = '', status = '', birthday = '', interests = '' }) {
+      fail((await sb.rpc('set_my_profile', { p_nickname: nickname, p_bio: bio, p_status: status, p_birthday: birthday, p_interests: interests })).error);
+      await loadProfiles();
+    },
+    async renamePseudo(pseudo) {
+      const { data } = await sb.auth.getSession();
+      const res = await fetch('/api/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${data.session?.access_token || ''}` },
+        body: JSON.stringify({ pseudo }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(out.error || 'Impossible de changer le pseudo.');
+      await loadProfiles();
+      presenceChannel?.track({ pseudo: me.pseudo }); // les autres voient le nouveau pseudo en ligne
+      return out.pseudo;
+    },
+    async touchLastSeen() {
+      await sb.rpc('touch_last_seen');
+    },
+
+    // Infos de la classe (page modifiable par les admins)
+    async classInfo() {
+      const { data, error } = await sb.from('class_info').select('content, updated_at').eq('id', 1).single();
+      fail(error);
+      return { ...(data.content || {}), updated_at: data.updated_at };
+    },
+    async setClassInfo(content) {
+      fail((await sb.rpc('set_class_info', { p_content: content })).error);
+    },
+
+    // « Vu » : jusqu'où chaque personne a lu un salon
+    async reads(roomId) {
+      const { data, error } = await sb.from('room_reads').select('user_id, last_read_id').eq('room_id', roomId);
+      fail(error);
+      return data;
+    },
+    async markRead(roomId, messageId) {
+      fail((await sb.rpc('mark_read', { p_room: roomId, p_id: messageId })).error);
+    },
+
+    // Sourdine d'un salon (propre à chaque personne)
+    async mutes() {
+      const { data, error } = await sb.from('room_prefs').select('room_id, muted').eq('user_id', me.id);
+      fail(error);
+      return new Set(data.filter((r) => r.muted).map((r) => r.room_id));
+    },
+    async setMuted(roomId, muted) {
+      fail((await sb.from('room_prefs').upsert({ room_id: roomId, user_id: me.id, muted }, { onConflict: 'room_id,user_id' })).error);
+    },
+
+    // Stickers de la classe
+    async stickers() {
+      const all = await loadStickers();
+      return all.filter((s) => s.active);
+    },
+    async addSticker(blob, name) {
+      const path = `${me.id}/${crypto.randomUUID()}.png`;
+      const { error } = await sb.storage.from('images').upload(path, blob, { contentType: 'image/png' });
+      fail(error);
+      const { error: e2 } = await sb.rpc('add_sticker', { p_name: name, p_path: path });
+      if (e2) {
+        sb.storage.from('images').remove([path]);
+        fail(e2);
+      }
+      await loadStickers();
+    },
+    async removeSticker(id) {
+      fail((await sb.rpc('remove_sticker', { p_id: id })).error);
+      await loadStickers();
+    },
     color: (pseudo) => colors.get(pseudo) || '',
     refreshPeople: loadProfiles,
 
@@ -248,6 +341,7 @@ export function createSupabaseBackend({ url, key }) {
       const { data, error } = await q;
       fail(error);
       if (data.some((m) => !profiles.has(m.user_id))) await loadProfiles();
+      if (data.some((m) => m.sticker_id && !stickerMap.has(m.sticker_id))) await loadStickers();
       const msgs = minId ? data : data.reverse();
       msgs.forEach(remember);
       await loadReplyTargets(msgs.map((m) => m.reply_to));
@@ -265,13 +359,14 @@ export function createSupabaseBackend({ url, key }) {
       );
     },
 
-    async send(roomId, text, { image = null, file = null, replyTo = null } = {}) {
+    async send(roomId, text, { image = null, file = null, replyTo = null, sticker = null } = {}) {
       const { error } = await sb.from('messages').insert({
         room_id: roomId,
         user_id: me.id,
         text,
         image_path: image,
         reply_to: replyTo,
+        sticker_id: sticker,
         file_path: file?.path ?? null,
         file_name: file?.name ?? null,
         file_size: file?.size ?? null,
@@ -397,6 +492,7 @@ export function createSupabaseBackend({ url, key }) {
           remember(p.new);
           let poll = null;
           try {
+            if (p.new.sticker_id && !stickerMap.has(p.new.sticker_id)) await loadStickers();
             await loadReplyTargets([p.new.reply_to]);
             if (p.new.text.startsWith('📊 ')) poll = (await loadPolls([p.new.id])).get(p.new.id) || null;
           } catch {}
@@ -416,6 +512,9 @@ export function createSupabaseBackend({ url, key }) {
           emit('reaction', { type: 'remove', message_id: p.old.message_id, user_id: p.old.user_id, emoji: p.old.emoji }),
         )
         .on('postgres_changes', { event: '*', schema: 'public', table: 'pinned_messages' }, () => emit('pins', {}))
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'room_reads' }, (p) =>
+          emit('reads', { room_id: p.new.room_id, user_id: p.new.user_id, last_read_id: p.new.last_read_id }),
+        )
         .on('postgres_changes', { event: '*', schema: 'public', table: 'poll_votes' }, (p) => emit('poll', { poll_id: p.new?.poll_id || null }))
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'polls' }, (p) => emit('poll', { poll_id: p.new.id }))
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'room_members' }, async (p) => {

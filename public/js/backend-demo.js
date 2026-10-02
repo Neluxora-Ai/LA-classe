@@ -33,6 +33,10 @@ export function createDemoBackend() {
     s.pins ||= [];
     s.polls ||= [];
     s.votes ||= [];
+    s.reads ||= []; // { room_id, user_id, last_read_id }
+    s.mutes ||= []; // { room_id, user_id }
+    s.stickers ||= []; // { id, name, path (data URL), active }
+    s.classInfo ||= {};
     return s;
   };
   const save = (s) => localStorage.setItem(KEY, JSON.stringify(s));
@@ -46,7 +50,10 @@ export function createDemoBackend() {
     emit(event, data);
     ping({ t, data });
   };
-  const pub = (u) => ({ id: u.id, pseudo: u.pseudo, color: u.color || '', is_admin: !!u.is_admin });
+  const pub = (u) => ({
+    id: u.id, pseudo: u.pseudo, color: u.color || '', is_admin: !!u.is_admin, nickname: u.nickname || null, status: u.status || null,
+    birthday: u.birthday || null, last_seen: u.last_seen || null, lastSeenHidden: u.settings?.lastseen === 'off',
+  });
   const replyInfo = (s, id) => {
     if (!id) return null;
     const m = s.messages.find((x) => x.id === id);
@@ -71,6 +78,7 @@ export function createDemoBackend() {
     reactions: s.reactions.filter((r) => r.message_id === m.id).map(({ user_id, emoji }) => ({ user_id, emoji })),
     reply: replyInfo(s, m.reply_to),
     poll: pollOf(s, m.id),
+    sticker: m.sticker_id ? s.stickers.find((x) => x.id === m.sticker_id) || null : null,
   });
   const refreshMe = (s) => {
     const u = userOf(s, me.id);
@@ -99,6 +107,7 @@ export function createDemoBackend() {
     else if (data.t === 'edited') emit('edited', data.data);
     else if (data.t === 'pins') emit('pins', {});
     else if (data.t === 'poll') emit('poll', data.data);
+    else if (data.t === 'reads') emit('reads', data.data);
     else if (data.t === 'rooms') emit(data.user_id === me.id ? 'rooms' : 'members', { room_id: data.room_id });
     else if (data.t === 'hb') {
       seen.set(data.pseudo, Date.now());
@@ -209,6 +218,128 @@ export function createDemoBackend() {
       return load().bans;
     },
 
+    // Profil
+    profile: (id) => {
+      const u = userOf(load(), id);
+      return u ? { ...pub(u), bio: u.bio || null, birthday: u.birthday || null, interests: u.interests || null, last_seen: u.last_seen || null, lastSeenHidden: u.settings?.lastseen === 'off' } : null;
+    },
+    async setProfile({ nickname = '', bio = '', status = '', birthday = '', interests = '' }) {
+      const clean = (v, max, label) => {
+        v = String(v || '').trim();
+        if (v.length > max) throw new Error(`${label} trop long (${max} caractères max)`);
+        return v || null;
+      };
+      const u = { nickname: clean(nickname, 30, 'Surnom'), bio: clean(bio, 200, 'Bio'), status: clean(status, 40, 'Statut'), interests: clean(interests, 120, 'Centres d\'intérêt') };
+      const bd = String(birthday || '').trim();
+      if (bd && (!/^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(bd) || Number.isNaN(new Date(2000, Number(bd.slice(0, 2)) - 1, Number(bd.slice(3))).getTime()) || new Date(2000, Number(bd.slice(0, 2)) - 1, Number(bd.slice(3))).getMonth() !== Number(bd.slice(0, 2)) - 1)) throw new Error('Anniversaire invalide');
+      const s = load();
+      Object.assign(userOf(s, me.id), u, { birthday: bd || null });
+      save(s);
+      refreshMe(s);
+    },
+    async renamePseudo(pseudo) {
+      pseudo = pseudo.trim();
+      if (!PSEUDO_RE.test(pseudo)) throw new Error('Pseudo : 2 à 20 lettres, chiffres, espaces, - ou _.');
+      const s = load();
+      const u = userOf(s, me.id);
+      if (pseudo === u.pseudo) return pseudo;
+      if (u.pseudo_changed_at && Date.now() - new Date(u.pseudo_changed_at).getTime() < 24 * 3600_000) {
+        const h = Math.ceil((24 * 3600_000 - (Date.now() - new Date(u.pseudo_changed_at).getTime())) / 3600_000);
+        throw new Error(`Tu pourras changer de pseudo dans ${h} h (une fois par jour).`);
+      }
+      if (s.bans.some((x) => x.pseudo_key === pseudo.toLowerCase())) throw new Error('Ce pseudo est interdit dans la classe.');
+      if (s.users.some((x) => x.id !== u.id && x.pseudo.toLowerCase() === pseudo.toLowerCase())) throw new Error('Ce pseudo est déjà pris.');
+      u.pseudo = pseudo;
+      u.pseudo_changed_at = new Date().toISOString();
+      save(s);
+      refreshMe(s);
+      return pseudo;
+    },
+    async touchLastSeen() {
+      const s = load();
+      const u = userOf(s, me.id);
+      if (!u || u.settings?.lastseen === 'off') return;
+      u.last_seen = new Date().toISOString();
+      save(s);
+    },
+
+    // Infos de la classe
+    async classInfo() {
+      return load().classInfo;
+    },
+    async setClassInfo(content) {
+      const s = load();
+      if (!userOf(s, me.id)?.is_admin) throw new Error('Interdit.');
+      const out = {};
+      for (const k of ['schedule', 'rules', 'contacts']) {
+        if (content[k] != null) {
+          if (String(content[k]).length > 3000) throw new Error(`${k} trop long (3000 caractères max)`);
+          out[k] = String(content[k]);
+        }
+      }
+      if (content.links) {
+        if (content.links.length > 20) throw new Error('20 liens maximum');
+        out.links = content.links.map((l) => {
+          const title = String(l.title || '').trim();
+          const url = String(l.url || '').trim();
+          if (!title || title.length > 60) throw new Error('Titre de lien invalide (1 à 60 caractères)');
+          if (!/^https:\/\/[^\s<>"]{3,300}$/.test(url)) throw new Error(`Adresse invalide (https:// uniquement) : ${title}`);
+          return { title, url };
+        });
+      }
+      s.classInfo = { ...out, updated_at: new Date().toISOString() };
+      save(s);
+    },
+
+    // « Vu », sourdine, stickers
+    async reads(roomId) {
+      return load().reads.filter((r) => r.room_id === roomId).map(({ user_id, last_read_id }) => ({ user_id, last_read_id }));
+    },
+    async markRead(roomId, messageId) {
+      const s = load();
+      if (!isMember(s, roomId, me.id)) throw new Error('Interdit.');
+      let r = s.reads.find((x) => x.room_id === roomId && x.user_id === me.id);
+      if (!r) s.reads.push((r = { room_id: roomId, user_id: me.id, last_read_id: 0 }));
+      if (messageId <= r.last_read_id) return;
+      r.last_read_id = messageId;
+      save(s);
+      both('reads', { room_id: roomId, user_id: me.id, last_read_id: messageId });
+    },
+    async mutes() {
+      return new Set(load().mutes.filter((m) => m.user_id === me.id).map((m) => m.room_id));
+    },
+    async setMuted(roomId, muted) {
+      const s = load();
+      s.mutes = s.mutes.filter((m) => !(m.room_id === roomId && m.user_id === me.id));
+      if (muted) s.mutes.push({ room_id: roomId, user_id: me.id });
+      save(s);
+    },
+    async stickers() {
+      return load().stickers.filter((x) => x.active);
+    },
+    async addSticker(blob, name) {
+      const s = load();
+      if (!userOf(s, me.id)?.is_admin) throw new Error('Interdit.');
+      name = String(name || '').trim();
+      if (!name || name.length > 30) throw new Error('Nom invalide (1 à 30 caractères).');
+      if (s.stickers.filter((x) => x.active).length >= 60) throw new Error('60 stickers maximum.');
+      const path = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = () => reject(new Error('Lecture impossible.'));
+        r.readAsDataURL(blob);
+      });
+      s.stickers.push({ id: crypto.randomUUID(), name, path, active: true });
+      save(s);
+    },
+    async removeSticker(id) {
+      const s = load();
+      if (!userOf(s, me.id)?.is_admin) throw new Error('Interdit.');
+      const st = s.stickers.find((x) => x.id === id);
+      if (st) st.active = false;
+      save(s);
+    },
+
     people: () => load().users.map(pub).sort((a, b) => a.pseudo.localeCompare(b.pseudo)),
     color: (pseudo) => load().users.find((u) => u.pseudo === pseudo)?.color || '',
     async refreshPeople() {
@@ -285,6 +416,8 @@ export function createDemoBackend() {
       dropMessages(s, (m) => m.user_id === userId);
       s.reactions = s.reactions.filter((r) => r.user_id !== userId);
       s.votes = s.votes.filter((v) => v.user_id !== userId);
+      s.reads = s.reads.filter((r) => r.user_id !== userId);
+      s.mutes = s.mutes.filter((m) => m.user_id !== userId);
       save(s);
     },
 
@@ -294,13 +427,14 @@ export function createDemoBackend() {
       list = minId ? list.filter((m) => m.id >= minId).slice(0, 300) : list.slice(-100);
       return list.map((m) => view(s, m));
     },
-    async send(roomId, text, { image = null, file = null, replyTo = null } = {}) {
+    async send(roomId, text, { image = null, file = null, replyTo = null, sticker = null } = {}) {
       const s = load();
       if (!isMember(s, roomId, me.id)) throw new Error('Interdit.');
       if (replyTo && s.messages.find((m) => m.id === replyTo)?.room_id !== roomId) replyTo = null;
+      if (sticker && !s.stickers.some((x) => x.id === sticker && x.active)) throw new Error('Sticker introuvable.');
       const msg = {
         id: s.nextId++, room_id: roomId, user_id: me.id, text, image_path: image, reply_to: replyTo, created_at: new Date().toISOString(),
-        edited_at: null, file_path: file?.path ?? null, file_name: file?.name ?? null, file_size: file?.size ?? null,
+        edited_at: null, file_path: file?.path ?? null, file_name: file?.name ?? null, file_size: file?.size ?? null, sticker_id: sticker,
       };
       s.messages.push(msg);
       save(s);

@@ -349,3 +349,83 @@ dialog { max-height: 90vh; overflow-y: auto; }
 .poll-add { margin-top: 6px; padding: 6px 12px; font-size: 14px; }
 .result-row { display: flex; align-items: center; gap: 6px; }
 .result-row .result { flex: 1; min-width: 0; }
+
+/* ======================================================================
+   v6 : profils, infos de la classe, « vu », hors ligne, sourdine, stickers
+   ====================================================================== */
+textarea, select {
+  width: 100%; margin-top: 4px; background: var(--bg); color: var(--text); font: inherit;
+  border: 1px solid var(--line-2); border-radius: 12px; padding: 10px 13px; outline: none; resize: vertical;
+}
+textarea:focus, select:focus { border-color: var(--accent-2); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-2) 27%, transparent); }
+select { width: auto; min-width: 90px; }
+.inline-form { display: flex; gap: 8px; align-items: center; }
+.inline-form input { margin: 0; flex: 1; }
+.inline-form .btn-ghost { padding: 9px 14px; }
+.bday-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.room-sub { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#mute-btn.off { opacity: .55; }
+
+/* liste en ligne / hors ligne */
+#online li { gap: 8px; }
+#online .li-txt, #offline .li-txt { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+#online .li-txt .st, #offline .li-txt .st { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.offline { list-style: none; margin: 0; padding: 0; }
+.offline li { display: flex; align-items: center; gap: 8px; padding: 4px 10px; font-size: 14px; color: var(--muted); cursor: pointer; border-radius: 8px; }
+.offline li:hover { background: var(--panel-2); }
+.offline li .avatar { opacity: .6; }
+.offline li .ago { margin-left: auto; font-size: 11px; white-space: nowrap; }
+.nick { color: var(--muted); font-size: 12px; margin-left: 4px; }
+
+/* fiche d'une personne */
+.card-head { display: flex; gap: 14px; align-items: center; }
+.card-head .avatar { width: 64px; height: 64px; font-size: 26px; }
+.card-id { min-width: 0; }
+.card-id b { font-size: 20px; }
+.card-status { margin-top: 4px; font-size: 14px; overflow-wrap: anywhere; }
+.card-bio { white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0; }
+.card-bio:empty { display: none; }
+.card-fields { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; font-size: 14px; }
+.card-fields dt { color: var(--muted); }
+.card-fields dd { margin: 0; overflow-wrap: anywhere; }
+.avatar.clickable, .msg .avatar { cursor: pointer; }
+
+/* infos de la classe */
+#dlg-info { width: min(540px, 94vw); }
+.edit-info-btn { margin-left: 8px; vertical-align: middle; }
+.info-sec { margin-bottom: 16px; }
+.info-sec h4 { margin: 0 0 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+.info-sec .txt { white-space: pre-wrap; overflow-wrap: anywhere; }
+.info-sec .empty-txt { color: var(--muted); font-style: italic; }
+.info-links a { display: block; padding: 6px 0; color: var(--accent-2); overflow-wrap: anywhere; }
+.info-bdays { list-style: none; margin: 0; padding: 0; }
+.info-bdays li { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; }
+.link-row { display: flex; gap: 6px; }
+.link-row input { margin: 0; }
+.link-row input:first-child { flex: 1; }
+.link-row input:nth-child(2) { flex: 2; }
+.link-row button { border: 1px solid var(--line-2); background: none; color: var(--text); border-radius: 8px; padding: 0 10px; }
+.updated-at { font-size: 12px; color: var(--muted); }
+
+/* « vu » sous le dernier message */
+.seen { align-self: flex-end; font-size: 11px; color: var(--muted); margin: -2px 8px 6px; max-width: 80%; text-align: right; }
+.seen.in-dm { font-weight: 600; }
+
+/* sourdine */
+.room-btn.muted .nm { opacity: .6; }
+.room-btn.muted .nm::after { content: " 🔕"; }
+.badge.muted { background: var(--muted); }
+
+/* stickers */
+.sticker-panel { margin: 0 14px; padding: 10px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); }
+.sticker-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px; max-height: 190px; overflow-y: auto; margin-top: 8px; }
+.sticker-grid .tile { position: relative; }
+.sticker-grid .tile > button.pick { width: 100%; border: 0; background: none; border-radius: 10px; padding: 4px; }
+.sticker-grid .tile > button.pick:hover { background: var(--panel-2); }
+.sticker-grid img { width: 100%; height: 56px; object-fit: contain; display: block; }
+.sticker-grid .big { font-size: 32px; line-height: 1.2; }
+.sticker-grid .tile .rm { position: absolute; top: -4px; right: -4px; width: 20px; height: 20px; border-radius: 50%; border: 0; background: #ff5555; color: #fff; font-size: 11px; line-height: 1; padding: 0; }
+.sticker-grid .add-tile { border: 2px dashed var(--line-3); background: none; border-radius: 10px; color: var(--muted); font-size: 24px; min-height: 64px; }
+.sticker-img { display: block; width: 140px; max-width: 100%; height: auto; max-height: 140px; object-fit: contain; }
+.msg.has-sticker .bubble, .msg.big-emoji .bubble { background: transparent !important; box-shadow: none; padding: 2px 4px; }
+.body.big { font-size: 3rem; line-height: 1.15; }

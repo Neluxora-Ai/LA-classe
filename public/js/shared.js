@@ -29,6 +29,56 @@ export const fileIcon = (name) => {
   if (e === 'zip') return '🗜️';
   return '📎';
 };
+export const MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+// « 03-15 » -> « 15 mars »
+export const birthdayLabel = (mmdd) => (/^\d\d-\d\d$/.test(mmdd || '') ? `${Number(mmdd.slice(3))} ${MONTHS[Number(mmdd.slice(0, 2)) - 1]}` : '');
+// Jours avant le prochain anniversaire (0 = aujourd'hui)
+export function daysUntilBirthday(mmdd, now = new Date()) {
+  if (!/^\d\d-\d\d$/.test(mmdd || '')) return null;
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  let next = new Date(now.getFullYear(), Number(mmdd.slice(0, 2)) - 1, Number(mmdd.slice(3)));
+  if (next < today) next = new Date(now.getFullYear() + 1, next.getMonth(), next.getDate());
+  return Math.round((next - today) / 86400000);
+}
+// « il y a 5 min », « il y a 3 h », « hier »…
+export function relTime(iso, now = Date.now()) {
+  const s = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000));
+  if (s < 90) return "à l'instant";
+  const m = Math.round(s / 60);
+  if (m < 60) return `il y a ${m} min`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `il y a ${h} h`;
+  const d = Math.round(h / 24);
+  return d === 1 ? 'hier' : d < 30 ? `il y a ${d} j` : 'il y a plus d\'un mois';
+}
+// Un message composé de 1 à 3 emojis seulement s'affiche en grand (« sticker emoji »)
+export const isBigEmoji = (text) => /^(?:\p{Extended_Pictographic}️?(?:‍\p{Extended_Pictographic}️?)*\s*){1,3}$/u.test((text || '').trim());
+export const BIG_EMOJIS = ['😂', '😍', '🥳', '😎', '🤩', '😭', '😡', '🤯', '🥺', '😴', '🤔', '🙄', '👍', '👏', '🙌', '💪', '🙏', '❤️', '🔥', '💯', '🎉', '💀', '👀', '🤝', '🍕', '☕', '🏆', '📚'];
+
+// Recadre un sticker : PNG (transparence gardée), 256 px maximum
+export async function resizeSticker(file) {
+  if (!IMAGE_EXT[file.type]) throw new Error('Format non supporté (png, jpg, gif, webp).');
+  if (file.size > MAX_IMAGE) throw new Error('Image trop grosse (5 Mo max).');
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error('Impossible de lire cette image.'));
+      i.src = url;
+    });
+    const k = Math.min(1, 256 / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(img.naturalWidth * k));
+    canvas.height = Math.max(1, Math.round(img.naturalHeight * k));
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    if (!blob) throw new Error('Impossible de préparer le sticker.');
+    return blob;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 export const formatSize = (n) => (n < 1024 ? `${n} o` : n < 1048576 ? `${Math.round(n / 1024)} Ko` : `${(n / 1048576).toFixed(1)} Mo`);
 export const AVATAR_COLORS = ['#7c5cff', '#ff5fa2', '#ff8a3d', '#f5c542', '#3ddc84', '#2fc4c4', '#3d9bff', '#b05cff', '#ff5555', '#8d99ae', '#a0522d', '#14b8a6'];
 export const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥'];

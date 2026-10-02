@@ -57,9 +57,12 @@
       <p id="no-dms" class="hint">Clique sur ＋ ou sur un pseudo « En ligne » pour écrire à quelqu'un.</p>
       <h2>En ligne <span id="online-count"></span></h2>
       <ul id="online"></ul>
+      <h2 id="offline-title" hidden>Hors ligne</h2>
+      <ul id="offline" class="offline"></ul>
       <div class="me">
         <span id="me-avatar" class="avatar"></span>
         <span id="me-name"></span>
+        <button id="info-btn" class="icon-btn" title="Infos de la classe">ℹ️</button>
         <button id="admin-btn" class="icon-btn" title="Panneau admin" hidden>🛡</button>
         <button id="profile-btn" class="icon-btn" title="Mon profil et réglages">⚙</button>
         <button id="logout" class="icon-btn" title="Se déconnecter">⏻</button>
@@ -70,6 +73,8 @@
       <header class="chat-head">
         <button id="menu" class="icon-btn menu-btn" title="Salons">☰</button>
         <span id="room-title"></span>
+        <span id="room-sub" class="room-sub"></span>
+        <button id="mute-btn" class="icon-btn" title="Couper les notifications de ce salon">🔔</button>
         <button id="search-btn" class="icon-btn" title="Rechercher dans les messages">🔍</button>
         <button id="members-btn" class="pill" title="Membres du salon">👥 <span id="members-count"></span></button>
         <span id="conn" class="conn off" title="Connexion"></span>
@@ -85,8 +90,15 @@
         <button type="button" id="reply-cancel" class="icon-btn" title="Annuler la réponse">✕</button>
       </div>
       <div id="mention-list" class="mention-list" hidden></div>
+      <div id="sticker-panel" class="sticker-panel" hidden>
+        <div id="sticker-tabs" class="seg"></div>
+        <div id="sticker-grid" class="sticker-grid"></div>
+        <p id="sticker-error" class="error"></p>
+      </div>
+      <input type="file" id="sticker-file" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
       <form id="composer" class="composer">
         <button type="button" id="emoji-btn" class="icon-btn" title="Emojis">😊</button>
+        <button type="button" id="sticker-btn" class="icon-btn" title="Stickers">🎟</button>
         <button type="button" id="img-btn" class="icon-btn" title="Envoyer une image ou un fichier (PDF, Word, Excel… 10 Mo max)">📎</button>
         <button type="button" id="poll-btn" class="icon-btn" title="Créer un sondage">📊</button>
         <input type="file" id="file" accept="image/png,image/jpeg,image/gif,image/webp,.pdf,.txt,.csv,.zip,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp" hidden>
@@ -134,6 +146,46 @@
     <div id="dm-people" class="people"></div>
     <p id="dm-error" class="error"></p>
     <div class="dlg-actions">
+      <button type="button" class="btn-ghost" data-close>Fermer</button>
+    </div>
+  </dialog>
+
+  <!-- Fiche d'une personne -->
+  <dialog id="dlg-card">
+    <div class="card-head">
+      <span id="card-avatar" class="avatar"></span>
+      <div class="card-id">
+        <div><b id="card-name"></b> <span id="card-admin" class="admin-badge" hidden>👑 admin</span></div>
+        <div id="card-nick" class="hint"></div>
+        <div id="card-status" class="card-status"></div>
+      </div>
+    </div>
+    <p id="card-bio" class="card-bio"></p>
+    <dl id="card-fields" class="card-fields"></dl>
+    <div class="dlg-actions">
+      <button type="button" id="card-dm" class="btn-primary">💬 Écrire</button>
+      <button type="button" class="btn-ghost" data-close>Fermer</button>
+    </div>
+  </dialog>
+
+  <!-- Infos de la classe -->
+  <dialog id="dlg-info">
+    <h3>Infos de la classe ℹ️ <button type="button" id="info-edit" class="mini-btn edit-info-btn" title="Modifier (admin)" hidden>✏</button></h3>
+    <div id="info-view"></div>
+    <form id="info-edit-form" hidden>
+      <label>Emploi du temps<textarea id="ie-schedule" rows="5" maxlength="3000" placeholder="Lundi : 8h Maths, 10h Anglais…"></textarea></label>
+      <label>Règles de la classe<textarea id="ie-rules" rows="4" maxlength="3000"></textarea></label>
+      <label>Contacts<textarea id="ie-contacts" rows="3" maxlength="3000" placeholder="Délégués, prof principal…"></textarea></label>
+      <div class="field-label">Liens utiles (https:// seulement, 20 max)</div>
+      <div id="ie-links" class="poll-opts-edit"></div>
+      <button type="button" id="ie-add-link" class="btn-ghost poll-add">＋ Ajouter un lien</button>
+      <p id="ie-error" class="error"></p>
+      <div class="dlg-actions">
+        <button type="button" id="ie-cancel" class="btn-ghost">Annuler</button>
+        <button type="submit" class="btn-primary">Enregistrer</button>
+      </div>
+    </form>
+    <div id="info-actions" class="dlg-actions">
       <button type="button" class="btn-ghost" data-close>Fermer</button>
     </div>
   </dialog>
@@ -209,6 +261,25 @@
     </div>
     <p id="avatar-msg" class="error"></p>
 
+    <div class="profile-section">
+      <div class="field-label">Mon pseudo <span class="hint">(un changement par jour)</span></div>
+      <form id="rename-form" class="inline-form">
+        <input id="rename-input" maxlength="20" autocomplete="off" aria-label="Nouveau pseudo">
+        <button type="submit" class="btn-ghost">Changer</button>
+      </form>
+      <p id="rename-msg" class="error"></p>
+      <form id="info-form">
+        <label>Surnom<input id="pf-nickname" maxlength="30" placeholder="ex. Ali" autocomplete="off"></label>
+        <label>Statut<input id="pf-status" maxlength="40" placeholder="ex. 📚 en révisions" autocomplete="off"></label>
+        <label>Bio<textarea id="pf-bio" maxlength="200" rows="2" placeholder="Quelques mots sur toi"></textarea></label>
+        <label>Centres d'intérêt<input id="pf-interests" maxlength="120" placeholder="ex. foot, manga, guitare" autocomplete="off"></label>
+        <div class="field-label">Anniversaire <span class="hint">(facultatif, visible de la classe)</span></div>
+        <div class="bday-row"><select id="pf-day" aria-label="Jour"></select><select id="pf-month" aria-label="Mois"></select></div>
+        <p id="info-msg" class="error"></p>
+        <button type="submit" class="btn-primary">Enregistrer mes infos</button>
+      </form>
+    </div>
+
     <div class="field-label">Couleur de l'avatar (si pas de photo)</div>
     <div id="color-choice" class="color-choice"></div>
 
@@ -223,6 +294,10 @@
       <div id="font-choice" class="seg"></div>
       <button type="button" id="appearance-reset" class="btn-ghost appearance-reset">Réinitialiser l'apparence</button>
     </div>
+
+    <div class="field-label">Confidentialité</div>
+    <label class="check"><input type="checkbox" id="pref-receipts"> Confirmations de lecture « vu » <span class="hint">(désactivées : tu ne vois pas non plus celles des autres)</span></label>
+    <label class="check"><input type="checkbox" id="pref-lastseen"> Afficher ma dernière connexion</label>
 
     <div class="field-label">Notifications</div>
     <label class="check"><input type="checkbox" id="pref-sound"> Son quand je reçois un message</label>

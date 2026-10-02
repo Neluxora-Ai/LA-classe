@@ -1,7 +1,8 @@
 import { createSupabaseBackend } from './backend-supabase.js';
 import { createDemoBackend } from './backend-demo.js';
 import {
-  AVATAR_COLORS, FILE_TYPES, MIN_PASSWORD, QUICK_REACTIONS, fileExt, fileIcon, formatSize, passwordStrength, resizeAvatar,
+  AVATAR_COLORS, BIG_EMOJIS, FILE_TYPES, MIN_PASSWORD, MONTHS, QUICK_REACTIONS, birthdayLabel, daysUntilBirthday, fileExt, fileIcon,
+  formatSize, isBigEmoji, passwordStrength, relTime, resizeAvatar, resizeSticker,
 } from './shared.js';
 
 const $ = (id) => document.getElementById(id);
@@ -32,6 +33,15 @@ let pins = []; // messages épinglés du salon ouvert
 
 const Theme = window.ClasseTheme;
 let appearance = Theme.load(); // { theme, accent, accent2, bg, font } : réglages d'apparence
+let privacy = { receipts: 'on', lastseen: 'on' }; // « vu » et dernière connexion (synchronisés sur le compte)
+let mutedRooms = new Set(); // salons dont les notifications sont coupées
+let onlineNames = new Set(); // pseudos actuellement en ligne
+const reads = new Map(); // salon ouvert : id de la personne -> dernier message lu
+const lastMarked = {}; // salon -> dernier message que j'ai marqué comme lu
+let stickers = []; // stickers de la classe
+let stickerTab = 'emoji';
+
+const receiptsOn = () => privacy.receipts !== 'off';
 
 const isAdmin = () => !!(b.me() || me)?.is_admin;
 const syncMe = () => {
@@ -250,7 +260,9 @@ async function enterApp(user) {
   buildEmojis();
   bindEvents();
   await loadRooms();
+  mutedRooms = await b.mutes().catch(() => new Set());
   b.start();
+  startPresenceLoop();
   await switchRoom(rooms[0]);
 }
 
@@ -267,13 +279,14 @@ function bindEvents() {
     if (!rooms.some((r) => r.id === m.room_id)) await loadRooms();
     const theirs = m.user_id !== me.id;
     const mentioned = theirs && mentionsMe(m.text);
-    if (theirs && (mentioned || document.hidden || m.room_id !== current?.id)) notify(m, mentioned);
+    const silent = mutedRooms.has(m.room_id) && !mentioned; // salon en sourdine : seules les @mentions préviennent
+    if (theirs && !silent && (mentioned || document.hidden || m.room_id !== current?.id)) notify(m, mentioned);
     if (m.room_id !== current?.id) {
       unread[m.room_id] = (unread[m.room_id] || 0) + 1;
       updateTitle();
       return renderRooms();
     }
-    if (theirs && document.hidden) {
+    if (theirs && document.hidden && !silent) {
       hiddenUnread++;
       updateTitle();
     }
@@ -284,6 +297,13 @@ function bindEvents() {
     if (stick) box.scrollTop = box.scrollHeight;
     typingUsers.delete(m.pseudo);
     renderTyping();
+    renderSeen();
+    markRead();
+  });
+  b.on('reads', ({ room_id, user_id, last_read_id }) => {
+    if (!room_id || room_id !== current?.id || user_id === me.id) return;
+    reads.set(user_id, Math.max(reads.get(user_id) || 0, last_read_id));
+    renderSeen();
   });
   b.on('deleted', ({ id }) => {
     document.querySelector(`.msg[data-id="${id}"]`)?.remove();
@@ -308,20 +328,10 @@ function bindEvents() {
     if (room_id === current?.id) updateMembersCount();
   }));
   b.on('presence', (list) => {
-    $('online-count').textContent = `(${list.length})`;
+    onlineNames = new Set(list);
     // quelqu'un de nouveau est en ligne : on met à jour la liste des comptes (mentions, messages privés)
-    if (list.some((name) => !b.people().some((p) => p.pseudo === name))) b.refreshPeople().catch(() => {});
-    const ul = $('online');
-    ul.replaceChildren();
-    for (const name of list) {
-      const li = document.createElement('li');
-      li.append(makeAvatar(name), name);
-      if (name !== me.pseudo) {
-        li.title = 'Écrire en privé';
-        li.onclick = () => startDmWith(name);
-      }
-      ul.append(li);
-    }
+    if (list.some((name) => !b.people().some((p) => p.pseudo === name))) b.refreshPeople().then(renderPresence).catch(() => {});
+    renderPresence();
   });
   b.on('typing', ({ room_id, pseudo }) => {
     if (room_id !== current?.id || pseudo === me.pseudo) return;
@@ -378,7 +388,7 @@ function notify(m, mentioned = false) {
   }
 }
 function updateTitle() {
-  const total = Object.values(unread).reduce((a, n) => a + n, 0) + hiddenUnread;
+  const total = Object.entries(unread).reduce((a, [id, n]) => a + (mutedRooms.has(id) ? 0 : n), 0) + hiddenUnread;
   document.title = total ? `(${total}) ${BASE_TITLE}` : BASE_TITLE;
 }
 document.addEventListener('visibilitychange', () => {
@@ -397,14 +407,14 @@ async function loadRooms() {
 function roomButton(r) {
   const btn = document.createElement('button');
   btn.type = 'button';
-  btn.className = `room-btn ${r.id === current?.id ? 'active' : ''}`;
+  btn.className = `room-btn ${r.id === current?.id ? 'active' : ''} ${mutedRooms.has(r.id) ? 'muted' : ''}`;
   const nm = document.createElement('span');
   nm.className = 'nm';
   nm.textContent = roomLabel(r);
   btn.append(nm);
   if (unread[r.id]) {
     const badge = document.createElement('span');
-    badge.className = 'badge';
+    badge.className = `badge${mutedRooms.has(r.id) ? ' muted' : ''}`;
     badge.textContent = unread[r.id];
     btn.append(badge);
   }
@@ -437,11 +447,80 @@ async function switchRoom(r) {
   pins = [];
   renderPinsBar();
   hideMentions();
+  hidePanels();
+  reads.clear();
+  renderMuteButton();
+  renderRoomSub();
   updateMembersCount();
   refreshPins();
+  loadReads(r);
   await showHistory();
   $('text').focus();
 }
+// Où en sont les autres dans ce salon (pour « vu »)
+async function loadReads(room) {
+  if (!receiptsOn()) return;
+  try {
+    const list = await b.reads(room.id);
+    if (room !== current) return;
+    reads.clear();
+    for (const r of list) if (r.user_id !== me.id) reads.set(r.user_id, r.last_read_id);
+    renderSeen();
+  } catch {}
+}
+// Je viens de lire jusqu'au dernier message du salon ouvert
+let markTimer = null;
+function markRead() {
+  if (!receiptsOn() || document.hidden || !current) return;
+  clearTimeout(markTimer);
+  const room = current;
+  markTimer = setTimeout(() => {
+    const rows = document.querySelectorAll('#messages .msg');
+    const last = Number(rows[rows.length - 1]?.dataset.id || 0);
+    if (!last || room !== current || last <= (lastMarked[room.id] || 0)) return;
+    lastMarked[room.id] = last;
+    b.markRead(room.id, last).catch(() => {});
+  }, 400);
+}
+// « Vu par … » sous mon dernier message
+function renderSeen() {
+  document.querySelectorAll('#messages .seen').forEach((el) => el.remove());
+  if (!receiptsOn() || !current) return;
+  const mine = [...document.querySelectorAll('#messages .msg.mine')];
+  const row = mine[mine.length - 1];
+  if (!row) return;
+  const id = Number(row.dataset.id);
+  const names = new Map(b.people().map((p) => [p.id, p.pseudo]));
+  const readers = [...reads].filter(([, last]) => last >= id).map(([uid]) => names.get(uid)).filter(Boolean);
+  if (!readers.length) return;
+  const el = document.createElement('div');
+  el.className = `seen${current.is_dm ? ' in-dm' : ''}`;
+  el.textContent = current.is_dm ? '✓✓ Vu' : `👁 Vu par ${readers.slice(0, 3).join(', ')}${readers.length > 3 ? ` et ${readers.length - 3} autre${readers.length > 4 ? 's' : ''}` : ''}`;
+  row.after(el);
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) markRead();
+});
+
+// ---------- Sourdine d'un salon ----------
+function renderMuteButton() {
+  const muted = !!current && mutedRooms.has(current.id);
+  const btn = $('mute-btn');
+  btn.textContent = muted ? '🔕' : '🔔';
+  btn.classList.toggle('off', muted);
+  btn.title = muted ? 'Notifications coupées (seules les @mentions préviennent) : cliquer pour les réactiver' : 'Couper les notifications de ce salon';
+}
+$('mute-btn').onclick = guard(async () => {
+  const id = current.id;
+  const muted = !mutedRooms.has(id);
+  await b.setMuted(id, muted);
+  if (muted) mutedRooms.add(id);
+  else mutedRooms.delete(id);
+  renderMuteButton();
+  renderRooms();
+  updateTitle();
+  toast(muted ? '🔕 Notifications coupées pour ce salon (les @mentions te préviennent encore).' : '🔔 Notifications réactivées.');
+});
 // minId : charge tous les messages depuis celui-là (pour atteindre un vieux message trouvé par la recherche / un épinglé)
 async function showHistory({ minId = null } = {}) {
   const room = current;
@@ -466,6 +545,8 @@ async function showHistory({ minId = null } = {}) {
   }
   for (const m of msgs) addMessage(m);
   if (!minId) box.scrollTop = box.scrollHeight;
+  renderSeen();
+  markRead();
 }
 async function updateMembersCount() {
   const room = current;
@@ -576,6 +657,9 @@ function renderBody(row, m) {
     return;
   }
   body.hidden = false;
+  const big = isBigEmoji(m.text) && !m.sticker && !m.image_path && !m.file_path && !m.reply;
+  body.classList.toggle('big', big);
+  row.classList.toggle('big-emoji', big);
   renderText(body, m.text);
   if (m.edited_at) {
     const tag = document.createElement('span');
@@ -799,11 +883,9 @@ function addMessage(m) {
     const name = document.createElement('b');
     name.textContent = m.pseudo;
     name.style.color = colorOf(m.pseudo);
-    if (!mine) {
-      name.style.cursor = 'pointer';
-      name.title = 'Écrire en privé';
-      name.onclick = () => startDmWith(m.pseudo);
-    }
+    name.style.cursor = 'pointer';
+    name.title = 'Voir le profil';
+    name.onclick = () => openCard(m.user_id);
     meta.append(name, fmtTime(m.created_at));
     bubble.append(meta);
   }
@@ -918,7 +1000,24 @@ function addMessage(m) {
     row.classList.toggle('show-actions');
   });
 
-  row.append(makeAvatar(m.pseudo, 34), bubble);
+  if (m.sticker) {
+    const img = document.createElement('img');
+    img.className = 'sticker-img';
+    img.alt = m.sticker.name;
+    img.title = m.sticker.name;
+    b.imageUrl(m.sticker.path).then((url) => {
+      img.src = url;
+    }).catch(() => (img.alt = 'sticker indisponible'));
+    img.onload = () => {
+      if (box.scrollHeight - box.scrollTop - box.clientHeight < 300) box.scrollTop = box.scrollHeight;
+    };
+    bubble.prepend(img);
+    row.classList.add('has-sticker');
+  }
+  const avatar = makeAvatar(m.pseudo, 34);
+  avatar.title = 'Voir le profil';
+  avatar.onclick = () => openCard(m.user_id);
+  row.append(avatar, bubble);
   box.append(row);
   renderBody(row, m);
   if (m.poll) renderPoll(row, m.poll);
@@ -967,7 +1066,16 @@ function buildEmojis() {
     panel.append(btn);
   }
 }
-$('emoji-btn').onclick = () => ($('emoji-panel').hidden = !$('emoji-panel').hidden);
+// Un seul panneau ouvert à la fois (emojis / stickers)
+function hidePanels() {
+  $('emoji-panel').hidden = true;
+  $('sticker-panel').hidden = true;
+}
+$('emoji-btn').onclick = () => {
+  const open = $('emoji-panel').hidden;
+  hidePanels();
+  $('emoji-panel').hidden = !open;
+};
 
 const sendImage = guard(async (file) => {
   if (!file || !file.type.startsWith('image/')) return;
@@ -1044,6 +1152,12 @@ function personRow(p, { checkbox, kick } = {}) {
   const row = document.createElement(checkbox ? 'label' : 'div');
   row.className = 'person';
   row.append(makeAvatar(p.pseudo), p.pseudo);
+  if (p.nickname) {
+    const nick = document.createElement('span');
+    nick.className = 'nick';
+    nick.textContent = `« ${p.nickname} »`;
+    row.append(nick);
+  }
   if (p.is_admin) {
     const crown = document.createElement('span');
     crown.className = 'crown';
@@ -1170,12 +1284,6 @@ async function openDmWith(userId) {
   dlgDm.close();
   await switchRoom(rooms.find((r) => r.id === id) || rooms[0]);
 }
-const startDmWith = guard(async (pseudo) => {
-  await b.refreshPeople();
-  const p = b.people().find((x) => x.pseudo === pseudo);
-  if (!p || p.id === me.id) return;
-  await openDmWith(p.id);
-});
 $('new-dm').onclick = guard(async () => {
   await b.refreshPeople();
   $('dm-error').textContent = '';
@@ -1280,6 +1388,7 @@ $('profile-btn').onclick = guard(async () => {
   $('profile-admin').hidden = !isAdmin();
   renderColorChoice();
   renderAppearance();
+  renderProfileInfo();
   $('pref-sound').checked = prefs.sound;
   $('pref-desktop').checked = prefs.desktop && 'Notification' in window && Notification.permission === 'granted';
   renderDesktopHint();
@@ -1341,23 +1450,35 @@ $('pw-form').addEventListener('submit', async (e) => {
 // ---------- Apparence : thème, couleur du site, fond, taille du texte ----------
 function loadAppearance() {
   // Les réglages du compte (synchronisés) priment ; sinon ceux déjà choisis dans ce navigateur
-  const server = Theme.normalize((b.me() || me)?.settings);
+  const all = (b.me() || me)?.settings || {};
+  const server = Theme.normalize(all);
   if (Object.keys(server).length) {
     appearance = server;
     Theme.save(appearance);
   } else {
     appearance = Theme.load();
   }
+  privacy = { receipts: all.receipts === 'off' ? 'off' : 'on', lastseen: all.lastseen === 'off' ? 'off' : 'on' };
   Theme.apply(appearance);
 }
 let pushTimer = null;
+// Un seul envoi pour tous les réglages du compte (apparence + confidentialité)
+function pushSettings() {
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => b.setSettings({ ...appearance, ...privacy }).catch((e) => toast(e.message)), 500);
+}
 function setAppearance(patch, { render = true, reset = false } = {}) {
   appearance = Theme.normalize(reset ? {} : { ...appearance, ...patch });
   Theme.apply(appearance);
   Theme.save(appearance);
   if (render) renderAppearance();
-  clearTimeout(pushTimer);
-  pushTimer = setTimeout(() => b.setSettings(appearance).catch((e) => toast(e.message)), 500);
+  pushSettings();
+}
+function setPrivacy(patch) {
+  privacy = { ...privacy, ...patch };
+  pushSettings();
+  renderSeen();
+  if (patch.lastseen === 'on') b.touchLastSeen().catch(() => {});
 }
 function segButton(label, selected, onClick) {
   const btn = document.createElement('button');
@@ -1411,6 +1532,12 @@ function renderMentionList() {
     btn.type = 'button';
     btn.className = `mention-item${i === mention.sel ? ' sel' : ''}`;
     btn.append(makeAvatar(p.pseudo, 22), p.pseudo);
+    if (p.nickname) {
+      const nick = document.createElement('span');
+      nick.className = 'nick';
+      nick.textContent = `« ${p.nickname} »`;
+      btn.append(nick);
+    }
     btn.onmousedown = (e) => {
       e.preventDefault(); // garde le focus dans la zone de saisie
       pickMention(p);
@@ -1431,8 +1558,12 @@ function updateMentions() {
     b.refreshPeople().then(updateMentions).catch(() => {});
   }
   const q = found[2].toLowerCase();
-  const pool = current?.is_common ? b.people() : roomMembers;
-  const items = pool.filter((p) => p.id !== me.id && p.pseudo.toLowerCase().startsWith(q)).slice(0, 6);
+  const byId = new Map(b.people().map((p) => [p.id, p]));
+  const pool = (current?.is_common ? b.people() : roomMembers).map((p) => ({ ...p, nickname: byId.get(p.id)?.nickname }));
+  // on retrouve quelqu'un par son pseudo ou par son surnom
+  const items = pool
+    .filter((p) => p.id !== me.id && (p.pseudo.toLowerCase().startsWith(q) || (p.nickname || '').toLowerCase().startsWith(q)))
+    .slice(0, 6);
   if (!items.length) return hideMentions();
   mention = { items, sel: 0, start: caret - found[2].length - 1 };
   renderMentionList();
@@ -1554,6 +1685,413 @@ $('poll-form').addEventListener('submit', async (e) => {
     $('poll-error').textContent = err.message;
   }
 });
+
+// ---------- En ligne / hors ligne, dernière connexion ----------
+function personLine(p, sub) {
+  const li = document.createElement('li');
+  li.append(makeAvatar(p.pseudo));
+  const txt = document.createElement('span');
+  txt.className = 'li-txt';
+  const name = document.createElement('span');
+  name.textContent = p.pseudo;
+  txt.append(name);
+  if (sub) {
+    const st = document.createElement('span');
+    st.className = 'st';
+    st.textContent = sub;
+    txt.append(st);
+  }
+  li.append(txt);
+  li.title = 'Voir le profil';
+  li.onclick = () => openCard(p.id);
+  return li;
+}
+function renderPresence() {
+  const people = b.people();
+  const byName = new Map(people.map((p) => [p.pseudo, p]));
+  const online = [...onlineNames].sort((x, y) => x.localeCompare(y));
+  $('online-count').textContent = `(${online.length})`;
+  $('online').replaceChildren(...online.map((name) => {
+    const p = byName.get(name) || { id: null, pseudo: name };
+    return personLine(p, p.status || (p.nickname ? `« ${p.nickname} »` : ''));
+  }));
+  // hors ligne : les plus récemment vus d'abord (ceux qui masquent leur dernière connexion à la fin)
+  const away = people
+    .filter((p) => p.pseudo !== me.pseudo && !onlineNames.has(p.pseudo))
+    .sort((x, y) => (y.last_seen || '').localeCompare(x.last_seen || '') || x.pseudo.localeCompare(y.pseudo))
+    .slice(0, 12);
+  $('offline-title').hidden = !away.length;
+  $('offline').replaceChildren(...away.map((p) => {
+    const li = personLine(p, p.status || '');
+    if (p.last_seen && !p.lastSeenHidden) {
+      const ago = document.createElement('span');
+      ago.className = 'ago';
+      ago.textContent = relTime(p.last_seen);
+      li.append(ago);
+    }
+    return li;
+  }));
+  renderRoomSub();
+}
+// Sous le titre d'un message privé : « en ligne » ou « vu il y a 5 min »
+function renderRoomSub() {
+  const el = $('room-sub');
+  el.textContent = '';
+  if (!current?.is_dm || !current.peer) return;
+  const p = b.people().find((x) => x.id === current.peer.id);
+  if (!p) return;
+  if (onlineNames.has(p.pseudo)) el.textContent = '🟢 en ligne';
+  else if (p.last_seen && !p.lastSeenHidden) el.textContent = `vu ${relTime(p.last_seen)}`;
+}
+let presenceTimer = null;
+function startPresenceLoop() {
+  clearInterval(presenceTimer);
+  const tick = async () => {
+    if (document.hidden) return;
+    try {
+      await b.touchLastSeen();
+      await b.refreshPeople();
+      renderPresence();
+    } catch {}
+  };
+  tick();
+  presenceTimer = setInterval(tick, 120_000);
+  document.addEventListener('visibilitychange', () => !document.hidden && tick());
+}
+
+// ---------- Fiche d'une personne ----------
+const dlgCard = $('dlg-card');
+const openCard = guard(async (userId) => {
+  if (!userId) return;
+  await b.refreshPeople();
+  syncMe();
+  const p = b.profile(userId);
+  if (!p) return toast('Profil introuvable.');
+  $('card-avatar').replaceWith(Object.assign(makeAvatar(p.pseudo), { id: 'card-avatar' }));
+  $('card-name').textContent = p.pseudo;
+  $('card-admin').hidden = !p.is_admin;
+  $('card-nick').textContent = p.nickname ? `Surnom : « ${p.nickname} »` : '';
+  $('card-status').textContent = p.status || '';
+  $('card-bio').textContent = p.bio || '';
+  const rows = [];
+  if (p.interests) rows.push(['Centres d\'intérêt', p.interests]);
+  if (p.birthday) rows.push(['Anniversaire', `🎂 ${birthdayLabel(p.birthday)}`]);
+  const online = onlineNames.has(p.pseudo);
+  rows.push(['Connexion', online ? '🟢 en ligne' : p.lastSeenHidden ? 'masquée' : p.last_seen ? `vu ${relTime(p.last_seen)}` : '—']);
+  $('card-fields').replaceChildren(...rows.flatMap(([k, v]) => {
+    const dt = document.createElement('dt');
+    dt.textContent = k;
+    const dd = document.createElement('dd');
+    dd.textContent = v;
+    return [dt, dd];
+  }));
+  const self = userId === me.id;
+  $('card-dm').hidden = self;
+  $('card-dm').onclick = guard(async () => {
+    dlgCard.close();
+    await openDmWith(userId);
+  });
+  dlgCard.showModal();
+});
+
+// ---------- Mes infos : pseudo, surnom, statut, bio, anniversaire ----------
+function fillBirthdaySelects() {
+  const day = $('pf-day');
+  const month = $('pf-month');
+  if (day.children.length) return;
+  day.append(new Option('Jour', ''));
+  for (let d = 1; d <= 31; d++) day.append(new Option(String(d), String(d).padStart(2, '0')));
+  month.append(new Option('Mois', ''));
+  MONTHS.forEach((m, i) => month.append(new Option(m, String(i + 1).padStart(2, '0'))));
+}
+function renderProfileInfo() {
+  fillBirthdaySelects();
+  const p = b.profile(me.id) || {};
+  $('rename-input').value = me.pseudo;
+  $('rename-msg').textContent = '';
+  $('info-msg').textContent = '';
+  $('pf-nickname').value = p.nickname || '';
+  $('pf-status').value = p.status || '';
+  $('pf-bio').value = p.bio || '';
+  $('pf-interests').value = p.interests || '';
+  $('pf-month').value = p.birthday ? p.birthday.slice(0, 2) : '';
+  $('pf-day').value = p.birthday ? p.birthday.slice(3) : '';
+  $('pref-receipts').checked = receiptsOn();
+  $('pref-lastseen').checked = privacy.lastseen !== 'off';
+}
+$('rename-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = $('rename-msg');
+  try {
+    const name = await b.renamePseudo($('rename-input').value);
+    syncMe();
+    renderMeAvatar();
+    $('profile-name').textContent = me.pseudo;
+    renderProfileInfo();
+    msg.className = 'ok';
+    msg.textContent = `Pseudo changé : tu t'appelles maintenant ${name} ✅ (utilise-le pour te connecter)`;
+    showHistory();
+  } catch (err) {
+    msg.className = 'error';
+    msg.textContent = err.message;
+  }
+});
+$('info-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = $('info-msg');
+  const month = $('pf-month').value;
+  const day = $('pf-day').value;
+  if (!!month !== !!day) {
+    msg.className = 'error';
+    return (msg.textContent = 'Anniversaire : choisis le jour ET le mois (ou laisse les deux vides).');
+  }
+  try {
+    await b.setProfile({
+      nickname: $('pf-nickname').value,
+      status: $('pf-status').value,
+      bio: $('pf-bio').value,
+      interests: $('pf-interests').value,
+      birthday: month && day ? `${month}-${day}` : '',
+    });
+    syncMe();
+    renderPresence();
+    msg.className = 'ok';
+    msg.textContent = 'Infos enregistrées ✅';
+  } catch (err) {
+    msg.className = 'error';
+    msg.textContent = err.message;
+  }
+});
+$('pref-receipts').onchange = (e) => setPrivacy({ receipts: e.target.checked ? 'on' : 'off' });
+$('pref-lastseen').onchange = (e) => {
+  setPrivacy({ lastseen: e.target.checked ? 'on' : 'off' });
+  if (!e.target.checked) toast('Ta dernière connexion est maintenant masquée.');
+};
+
+// ---------- Infos de la classe ----------
+const dlgInfo = $('dlg-info');
+let infoData = {};
+function infoSection(title, node) {
+  const sec = document.createElement('div');
+  sec.className = 'info-sec';
+  const h = document.createElement('h4');
+  h.textContent = title;
+  sec.append(h, node);
+  return sec;
+}
+function textNode(text) {
+  const d = document.createElement('div');
+  if (text && text.trim()) {
+    d.className = 'txt';
+    d.textContent = text;
+  } else {
+    d.className = 'empty-txt';
+    d.textContent = 'Rien pour le moment.';
+  }
+  return d;
+}
+function renderInfoView() {
+  const links = document.createElement('div');
+  links.className = 'info-links';
+  const list = (infoData.links || []).filter((l) => /^https:\/\//.test(l.url));
+  if (list.length) {
+    for (const l of list) {
+      const a = document.createElement('a');
+      a.href = l.url;
+      a.textContent = `🔗 ${l.title}`;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      links.append(a);
+    }
+  } else links.append(textNode(''));
+
+  const upcoming = b.people()
+    .map((p) => ({ p, days: daysUntilBirthday(p.birthday) }))
+    .filter((x) => x.days !== null && x.days <= 30)
+    .sort((x, y) => x.days - y.days);
+  const bd = document.createElement('ul');
+  bd.className = 'info-bdays';
+  for (const { p, days } of upcoming) {
+    const li = document.createElement('li');
+    const who = document.createElement('span');
+    who.textContent = `🎂 ${p.pseudo}${p.nickname ? ` « ${p.nickname} »` : ''}`;
+    const when = document.createElement('span');
+    when.textContent = days === 0 ? "aujourd'hui !" : days === 1 ? 'demain' : `${birthdayLabel(p.birthday)} (dans ${days} j)`;
+    li.append(who, when);
+    bd.append(li);
+  }
+  const bdBox = upcoming.length ? bd : textNode('');
+  const updated = document.createElement('div');
+  updated.className = 'updated-at';
+  updated.textContent = infoData.updated_at && Object.keys(infoData).length > 1 ? `Mis à jour ${relTime(infoData.updated_at)}` : '';
+  $('info-view').replaceChildren(
+    infoSection('Emploi du temps', textNode(infoData.schedule)),
+    infoSection('Règles de la classe', textNode(infoData.rules)),
+    infoSection('Contacts', textNode(infoData.contacts)),
+    infoSection('Liens utiles', links),
+    infoSection('Anniversaires à venir (30 jours)', bdBox),
+    updated,
+  );
+}
+function linkRow(title = '', url = '') {
+  const row = document.createElement('div');
+  row.className = 'link-row';
+  const t = document.createElement('input');
+  t.maxLength = 60;
+  t.placeholder = 'Titre';
+  t.value = title;
+  const u = document.createElement('input');
+  u.maxLength = 300;
+  u.placeholder = 'https://…';
+  u.value = url;
+  const rm = document.createElement('button');
+  rm.type = 'button';
+  rm.textContent = '✕';
+  rm.title = 'Retirer ce lien';
+  rm.onclick = () => row.remove();
+  row.append(t, u, rm);
+  return row;
+}
+function showInfoMode(edit) {
+  $('info-view').hidden = edit;
+  $('info-edit-form').hidden = !edit;
+  $('info-actions').hidden = edit;
+  $('info-edit').hidden = edit || !isAdmin();
+}
+$('info-btn').onclick = guard(async () => {
+  await b.refreshPeople();
+  syncMe();
+  infoData = await b.classInfo();
+  renderInfoView();
+  showInfoMode(false);
+  dlgInfo.showModal();
+});
+$('info-edit').onclick = () => {
+  $('ie-schedule').value = infoData.schedule || '';
+  $('ie-rules').value = infoData.rules || '';
+  $('ie-contacts').value = infoData.contacts || '';
+  $('ie-links').replaceChildren(...(infoData.links || []).map((l) => linkRow(l.title, l.url)));
+  $('ie-error').textContent = '';
+  showInfoMode(true);
+};
+$('ie-add-link').onclick = () => {
+  if ($('ie-links').children.length >= 20) return ($('ie-error').textContent = '20 liens maximum.');
+  const row = linkRow();
+  $('ie-links').append(row);
+  row.querySelector('input').focus();
+};
+$('ie-cancel').onclick = () => showInfoMode(false);
+$('info-edit-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const links = [...$('ie-links').children]
+    .map((row) => ({ title: row.children[0].value.trim(), url: row.children[1].value.trim() }))
+    .filter((l) => l.title || l.url);
+  try {
+    await b.setClassInfo({ schedule: $('ie-schedule').value, rules: $('ie-rules').value, contacts: $('ie-contacts').value, links });
+    infoData = await b.classInfo();
+    renderInfoView();
+    showInfoMode(false);
+  } catch (err) {
+    $('ie-error').textContent = err.message;
+  }
+});
+
+// ---------- Stickers ----------
+function sendSticker(options, text = '') {
+  hidePanels();
+  return b.send(current.id, text, { ...options, replyTo: replyTo?.id ?? null }).then(clearReply);
+}
+function renderStickerPanel() {
+  const tabs = [['emoji', '😀 Emojis géants'], ['class', '🎟 Stickers de la classe']];
+  $('sticker-tabs').replaceChildren(...tabs.map(([id, label]) => segButton(label, stickerTab === id, () => {
+    stickerTab = id;
+    renderStickerPanel();
+  })));
+  const grid = $('sticker-grid');
+  $('sticker-error').textContent = '';
+  if (stickerTab === 'emoji') {
+    grid.replaceChildren(...BIG_EMOJIS.map((em) => {
+      const tile = document.createElement('div');
+      tile.className = 'tile';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'pick big';
+      btn.textContent = em;
+      btn.onclick = guard(() => sendSticker({}, em));
+      tile.append(btn);
+      return tile;
+    }));
+    return;
+  }
+  const tiles = stickers.map((s) => {
+    const tile = document.createElement('div');
+    tile.className = 'tile';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'pick';
+    btn.title = s.name;
+    const img = document.createElement('img');
+    img.alt = s.name;
+    b.imageUrl(s.path).then((u) => (img.src = u)).catch(() => {});
+    btn.append(img);
+    btn.onclick = guard(() => sendSticker({ sticker: s.id }));
+    tile.append(btn);
+    if (isAdmin()) {
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'rm';
+      rm.textContent = '✕';
+      rm.title = 'Retirer ce sticker (admin)';
+      rm.onclick = async () => {
+        if (!confirm(`Retirer le sticker « ${s.name} » ? Les anciens messages qui l'utilisent restent affichés.`)) return;
+        try {
+          await b.removeSticker(s.id);
+          stickers = await b.stickers();
+          renderStickerPanel();
+        } catch (err) {
+          $('sticker-error').textContent = err.message;
+        }
+      };
+      tile.append(rm);
+    }
+    return tile;
+  });
+  if (isAdmin()) {
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'add-tile';
+    add.textContent = '＋';
+    add.title = 'Ajouter un sticker (admin)';
+    add.onclick = () => $('sticker-file').click();
+    tiles.push(add);
+  }
+  grid.replaceChildren(...tiles);
+  if (!stickers.length) $('sticker-error').textContent = isAdmin() ? 'Aucun sticker pour le moment : ajoute le premier avec ＋.' : "Aucun sticker de la classe pour le moment (c'est un admin qui les ajoute).";
+}
+$('sticker-btn').onclick = guard(async () => {
+  const open = $('sticker-panel').hidden;
+  hidePanels();
+  if (!open) return;
+  $('sticker-panel').hidden = false;
+  renderStickerPanel();
+  stickers = await b.stickers();
+  renderStickerPanel();
+});
+$('sticker-file').onchange = async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  const name = prompt('Nom du sticker (30 caractères max) :', file.name.replace(/\.[^.]+$/, '').slice(0, 30));
+  if (!name) return;
+  try {
+    $('sticker-error').textContent = 'Ajout du sticker…';
+    await b.addSticker(await resizeSticker(file), name);
+    stickers = await b.stickers();
+    renderStickerPanel();
+  } catch (err) {
+    $('sticker-error').textContent = err.message;
+  }
+};
 
 // ---------- Panneau admin : comptes, suppression, bannissement ----------
 const dlgAdmin = $('dlg-admin');

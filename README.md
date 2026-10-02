@@ -20,7 +20,8 @@ code de classe : `demo`). Ouvre un 2ᵉ onglet et crée un 2ᵉ compte pour voir
 2. **SQL Editor → New query** : colle tout le contenu de [`supabase/schema.sql`](supabase/schema.sql) → **Run**.
    Puis une 2ᵉ requête avec [`supabase/v3.sql`](supabase/v3.sql) → **Run** (profil, réactions, réponses, messages privés, admin),
    puis une 3ᵉ avec [`supabase/v4.sql`](supabase/v4.sql) → **Run** (photo de profil, bannissement),
-   puis une 4ᵉ avec [`supabase/v5.sql`](supabase/v5.sql) → **Run** (apparence, modification, épinglés, sondages, fichiers).
+   puis une 4ᵉ avec [`supabase/v5.sql`](supabase/v5.sql) → **Run** (apparence, modification, épinglés, sondages, fichiers),
+   puis une 5ᵉ avec [`supabase/v6.sql`](supabase/v6.sql) → **Run** (profils complets, infos de la classe, « vu », sourdine, stickers).
 3. **Authentication → Sign In / Providers** : **désactive « Allow new users to sign up »**.
    ⚠️ Indispensable : sinon n'importe qui pourrait créer un compte en contournant le code de classe.
 4. **Project Settings → API** : note
@@ -67,6 +68,14 @@ puis `npm run dev`.
 - **Sondages** (📊) : 2 à 6 choix, choix unique ou multiple, votes en direct (le survol d'un choix montre qui a voté), le créateur ou un admin peut le terminer.
 - **Fichiers** (📎 ou glisser-déposer) : PDF, Word, Excel, PowerPoint, OpenDocument, texte, CSV, ZIP, 10 Mo max. Stockés dans un bucket privé, téléchargés via des liens temporaires. Pas d'exécutables, ni HTML, ni SVG.
 - **Apparence (⚙ Profil)** : thème sombre / clair / automatique, couleur du site (9 thèmes ou n'importe quelle couleur), fond du chat, taille du texte. Réglages synchronisés sur le compte, donc retrouvés sur le téléphone et l'ordinateur.
+- **Fiche de profil** : clique sur un pseudo ou un avatar (messages, listes) pour voir surnom, statut, bio, centres d'intérêt, anniversaire et dernière connexion, avec un bouton « Écrire ».
+  Tu les règles dans ⚙ → « Mon pseudo » / « Mes infos ». Tout est facultatif et visible des comptes de la classe.
+- **Changer de pseudo** (⚙) : une fois par jour. Le pseudo sert aussi à se connecter : après un changement, on se reconnecte avec le nouveau. L'ancien pseudo se libère. Les admins voient l'historique des changements dans la base (table `pseudo_changes`). Route serveur : `api/rename.js`.
+- **Infos de la classe** (ℹ️) : emploi du temps, règles, contacts, liens utiles (https uniquement) et anniversaires des 30 prochains jours. Les admins modifient avec ✏.
+- **« Vu »** : « ✓✓ Vu » sous ton dernier message dans un message privé, « 👁 Vu par … » dans un groupe. Réglable dans ⚙ → Confidentialité : si tu désactives, tu ne vois pas non plus celles des autres.
+- **Dernière connexion** : liste « Hors ligne » avec « il y a 5 min » ; masquable dans ⚙ → Confidentialité (elle est alors effacée, pas seulement cachée).
+- **Sourdine** (🔔 en haut du salon) : coupe son et notifications de ce salon pour toi seul ; les @mentions te préviennent quand même.
+- **Stickers** (🎟) : emojis géants pour tous (un message de 1 à 3 emojis s'affiche en grand) et stickers de la classe ajoutés par les admins (＋). Retirer un sticker le cache du choix mais les anciens messages le gardent. Les fichiers `.gif` s'envoient comme des images ; une recherche de GIF (Giphy / Tenor) demanderait une clé d'API et n'est pas incluse.
 - **Profil (⚙)** : photo de profil (recadrée en carré 256 px, 5 Mo max avant réduction), couleur de l'avatar si pas de photo,
   changement de mot de passe, son et notifications du navigateur (réglages gardés dans ton navigateur).
 - **Inscription** : passe par `api/register.js` (fonction Vercel) qui vérifie le code de classe (avec limite d'essais par IP).
@@ -100,5 +109,6 @@ update public.profiles set is_admin = true where pseudo = 'LePseudo';
 - Mot de passe oublié : il n'y a pas d'e-mail de récupération. Réinitialise-le depuis Supabase → Authentication → Users.
 - Pour exclure quelqu'un : Supabase → Authentication → Users → supprimer.
 - Les messages privés n'ont que deux membres, personne d'autre ne peut les lire (RLS) ; l'admin non plus depuis le site.
+- Le code de classe se change dans Vercel (variable `CLASS_CODE`, puis redéployer) et dans `.env` en local ; il est sensible aux majuscules.
 - Limite connue : quand quelqu'un retire une réaction, l'événement temps réel (qui contient l'identifiant du message, de la personne et l'emoji, jamais le texte) est visible par les autres comptes connectés, même hors du salon.
 - Limite connue : un message de « X écrit… » dans un groupe privé transite par un canal partagé (il révèle seulement un pseudo et un identifiant de groupe, jamais le contenu).
