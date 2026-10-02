@@ -19,7 +19,8 @@ code de classe : `demo`). Ouvre un 2ᵉ onglet et crée un 2ᵉ compte pour voir
 1. Crée un compte sur https://supabase.com → **New project** (choisis une région proche, ex. Paris/Frankfurt, et un mot de passe de base de données).
 2. **SQL Editor → New query** : colle tout le contenu de [`supabase/schema.sql`](supabase/schema.sql) → **Run**.
    Puis une 2ᵉ requête avec [`supabase/v3.sql`](supabase/v3.sql) → **Run** (profil, réactions, réponses, messages privés, admin),
-   puis une 3ᵉ avec [`supabase/v4.sql`](supabase/v4.sql) → **Run** (photo de profil, bannissement).
+   puis une 3ᵉ avec [`supabase/v4.sql`](supabase/v4.sql) → **Run** (photo de profil, bannissement),
+   puis une 4ᵉ avec [`supabase/v5.sql`](supabase/v5.sql) → **Run** (apparence, modification, épinglés, sondages, fichiers).
 3. **Authentication → Sign In / Providers** : **désactive « Allow new users to sign up »**.
    ⚠️ Indispensable : sinon n'importe qui pourrait créer un compte en contournant le code de classe.
 4. **Project Settings → API** : note
@@ -59,6 +60,13 @@ puis `npm run dev`.
   (bouton 👥). Quand le dernier membre part, le groupe est supprimé.
 - **Messages privés** : clique sur un pseudo « En ligne » (ou sur le nom d'un auteur, ou sur ＋ dans « Messages privés »). Une seule conversation par paire de personnes.
 - **Réactions et réponses** : passe la souris sur un message (ou appuie dessus sur téléphone) → 😊 réagir, ↩ répondre, 🗑 supprimer.
+- **Modifier un message** (✏, tes propres messages) : affiché « (modifié) » chez tout le monde. Un sondage ne se modifie pas.
+- **@mentions** : tape `@` puis le début d'un pseudo (↑ ↓ Entrée / Tab). La personne mentionnée voit le message en surbrillance et reçoit une notification, même si elle regarde déjà le salon.
+- **Messages épinglés** (📌) : jusqu'à 5 par salon, barre en haut du salon. Dans le salon commun, seuls les admins épinglent ; dans un groupe ou un message privé, tous les membres.
+- **Recherche** (🔍) : dans le salon ouvert ou dans tous tes salons ; un clic mène au message (même ancien).
+- **Sondages** (📊) : 2 à 6 choix, choix unique ou multiple, votes en direct (le survol d'un choix montre qui a voté), le créateur ou un admin peut le terminer.
+- **Fichiers** (📎 ou glisser-déposer) : PDF, Word, Excel, PowerPoint, OpenDocument, texte, CSV, ZIP, 10 Mo max. Stockés dans un bucket privé, téléchargés via des liens temporaires. Pas d'exécutables, ni HTML, ni SVG.
+- **Apparence (⚙ Profil)** : thème sombre / clair / automatique, couleur du site (9 thèmes ou n'importe quelle couleur), fond du chat, taille du texte. Réglages synchronisés sur le compte, donc retrouvés sur le téléphone et l'ordinateur.
 - **Profil (⚙)** : photo de profil (recadrée en carré 256 px, 5 Mo max avant réduction), couleur de l'avatar si pas de photo,
   changement de mot de passe, son et notifications du navigateur (réglages gardés dans ton navigateur).
 - **Inscription** : passe par `api/register.js` (fonction Vercel) qui vérifie le code de classe (avec limite d'essais par IP).

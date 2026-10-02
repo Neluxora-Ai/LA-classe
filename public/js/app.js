@@ -1,6 +1,8 @@
 import { createSupabaseBackend } from './backend-supabase.js';
 import { createDemoBackend } from './backend-demo.js';
-import { AVATAR_COLORS, MIN_PASSWORD, QUICK_REACTIONS, passwordStrength, resizeAvatar } from './shared.js';
+import {
+  AVATAR_COLORS, FILE_TYPES, MIN_PASSWORD, QUICK_REACTIONS, fileExt, fileIcon, formatSize, passwordStrength, resizeAvatar,
+} from './shared.js';
 
 const $ = (id) => document.getElementById(id);
 const cfg = window.APP_CONFIG || {};
@@ -23,6 +25,13 @@ let hiddenUnread = 0; // messages reçus dans le salon ouvert pendant que l'ongl
 const unread = {};
 const typingUsers = new Map();
 const reactionsById = new Map(); // id du message -> [{ user_id, emoji }]
+const msgById = new Map(); // id du message -> message affiché (texte à jour, pour modifier / citer)
+const pollsByMsg = new Map(); // id du message -> sondage affiché
+let roomMembers = []; // membres du salon ouvert (pour l'auto-complétion des @mentions)
+let pins = []; // messages épinglés du salon ouvert
+
+const Theme = window.ClasseTheme;
+let appearance = Theme.load(); // { theme, accent, accent2, bg, font } : réglages d'apparence
 
 const isAdmin = () => !!(b.me() || me)?.is_admin;
 const syncMe = () => {
@@ -95,17 +104,31 @@ const snippet = (text, image) => {
 };
 const roomLabel = (r) => (r.is_dm ? `💬 ${r.peer?.pseudo ?? 'conversation terminée'}` : `${r.emoji} ${r.name}`);
 
-// Texte -> nœuds DOM avec liens http(s) cliquables (jamais d'innerHTML).
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const NAME_END = '(?![\\p{L}\\p{N}_-])'; // un pseudo ne continue pas par une lettre, un chiffre, _ ou -
+// Vrai si le texte mentionne @monpseudo
+const mentionsMe = (text) => !!me && new RegExp(`@${escapeRe(me.pseudo)}${NAME_END}`, 'iu').test(text || '');
+
+// Texte -> nœuds DOM : liens http(s) cliquables et @mentions de pseudos connus (jamais d'innerHTML).
 function renderText(container, text) {
+  const names = b.people().map((p) => p.pseudo).sort((x, y) => y.length - x.length).map(escapeRe);
+  const re = new RegExp(`(https?:\\/\\/[^\\s<]+)${names.length ? `|@(${names.join('|')})${NAME_END}` : ''}`, 'giu');
   let last = 0;
-  for (const m of text.matchAll(/https?:\/\/[^\s<]+/g)) {
+  for (const m of text.matchAll(re)) {
     container.append(text.slice(last, m.index));
-    const a = document.createElement('a');
-    a.href = m[0];
-    a.textContent = m[0];
-    a.target = '_blank';
-    a.rel = 'noopener noreferrer';
-    container.append(a);
+    if (m[1]) {
+      const a = document.createElement('a');
+      a.href = m[1];
+      a.textContent = m[1];
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      container.append(a);
+    } else {
+      const span = document.createElement('span');
+      span.className = `mention${me && m[2].toLowerCase() === me.pseudo.toLowerCase() ? ' me' : ''}`;
+      span.textContent = m[0];
+      container.append(span);
+    }
     last = m.index + m[0].length;
   }
   container.append(text.slice(last));
@@ -219,6 +242,7 @@ function renderMeAvatar() {
 async function enterApp(user) {
   me = user;
   syncMe();
+  loadAppearance();
   $('auth').hidden = true;
   $('app').hidden = false;
   $('admin-btn').hidden = !isAdmin();
@@ -242,7 +266,8 @@ function bindEvents() {
   b.on('message', async (m) => {
     if (!rooms.some((r) => r.id === m.room_id)) await loadRooms();
     const theirs = m.user_id !== me.id;
-    if (theirs && (document.hidden || m.room_id !== current?.id)) notify(m);
+    const mentioned = theirs && mentionsMe(m.text);
+    if (theirs && (mentioned || document.hidden || m.room_id !== current?.id)) notify(m, mentioned);
     if (m.room_id !== current?.id) {
       unread[m.room_id] = (unread[m.room_id] || 0) + 1;
       updateTitle();
@@ -263,7 +288,13 @@ function bindEvents() {
   b.on('deleted', ({ id }) => {
     document.querySelector(`.msg[data-id="${id}"]`)?.remove();
     reactionsById.delete(id);
+    msgById.delete(id);
+    pollsByMsg.delete(id);
+    if (pins.some((p) => p.id === id)) refreshPins();
   });
+  b.on('edited', applyEdit);
+  b.on('pins', guard(refreshPins));
+  b.on('poll', guard(({ poll_id }) => refreshPolls(poll_id)));
   b.on('reaction', (ev) => {
     applyReaction(ev);
     renderReactions(ev.message_id);
@@ -278,6 +309,8 @@ function bindEvents() {
   }));
   b.on('presence', (list) => {
     $('online-count').textContent = `(${list.length})`;
+    // quelqu'un de nouveau est en ligne : on met à jour la liste des comptes (mentions, messages privés)
+    if (list.some((name) => !b.people().some((p) => p.pseudo === name))) b.refreshPeople().catch(() => {});
     const ul = $('online');
     ul.replaceChildren();
     for (const name of list) {
@@ -326,13 +359,16 @@ function beep() {
     });
   } catch {}
 }
-function notify(m) {
+function notify(m, mentioned = false) {
   if (prefs.sound) beep();
   if (prefs.desktop && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
     const room = rooms.find((r) => r.id === m.room_id);
     const where = !room || room.is_dm ? '' : ` · ${room.emoji} ${room.name}`;
     try {
-      const n = new Notification(`${m.pseudo}${where}`, { body: snippet(m.text, m.image_path), tag: m.room_id });
+      const n = new Notification(`${m.pseudo}${mentioned ? ' t\'a mentionné' : ''}${where}`, {
+        body: snippet(m.text, m.image_path || m.file_name),
+        tag: m.room_id,
+      });
       n.onclick = () => {
         window.focus();
         if (room) switchRoom(room);
@@ -398,15 +434,20 @@ async function switchRoom(r) {
   renderRooms();
   closeSidebar();
   $('messages').replaceChildren();
+  pins = [];
+  renderPinsBar();
+  hideMentions();
   updateMembersCount();
+  refreshPins();
   await showHistory();
   $('text').focus();
 }
-async function showHistory() {
+// minId : charge tous les messages depuis celui-là (pour atteindre un vieux message trouvé par la recherche / un épinglé)
+async function showHistory({ minId = null } = {}) {
   const room = current;
   let msgs;
   try {
-    msgs = await b.history(room.id);
+    msgs = await b.history(room.id, { minId });
   } catch (e) {
     return toast(e.message);
   }
@@ -414,6 +455,8 @@ async function showHistory() {
   const box = $('messages');
   box.replaceChildren();
   reactionsById.clear();
+  msgById.clear();
+  pollsByMsg.clear();
   lastMsg = null;
   if (!msgs.length) {
     const p = document.createElement('div');
@@ -422,14 +465,15 @@ async function showHistory() {
     box.append(p);
   }
   for (const m of msgs) addMessage(m);
-  box.scrollTop = box.scrollHeight;
+  if (!minId) box.scrollTop = box.scrollHeight;
 }
 async function updateMembersCount() {
   const room = current;
-  if (room.is_dm) return;
   try {
     const list = await b.members(room);
-    if (room === current) $('members-count').textContent = list.length;
+    if (room !== current) return;
+    roomMembers = list;
+    if (!room.is_dm) $('members-count').textContent = list.length;
   } catch {}
 }
 
@@ -482,7 +526,7 @@ const toggleReaction = guard(async (id, emoji) => {
 
 // ---------- Réponses ----------
 function setReply(m) {
-  replyTo = { id: m.id, pseudo: m.pseudo, text: snippet(m.text, m.image_path) };
+  replyTo = { id: m.id, pseudo: m.pseudo, text: snippet(m.text, m.image_path || m.file_name) };
   $('reply-name').textContent = `↩ ${m.pseudo} :`;
   $('reply-name').style.fontWeight = '700';
   $('reply-snippet').textContent = replyTo.text;
@@ -494,13 +538,24 @@ function clearReply() {
   $('reply-bar').hidden = true;
 }
 $('reply-cancel').onclick = clearReply;
-function jumpTo(id) {
-  const row = document.querySelector(`.msg[data-id="${id}"]`);
-  if (!row) return toast('Ce message est plus ancien que ceux affichés.');
+// Va jusqu'à un message (changeant de salon si besoin, et chargeant l'historique ancien si nécessaire)
+const goToMessage = guard(async (roomId, id) => {
+  if (current?.id !== roomId) {
+    const room = rooms.find((r) => r.id === roomId);
+    if (!room) return toast("Tu n'as plus accès à ce salon.");
+    await switchRoom(room);
+  }
+  let row = document.querySelector(`.msg[data-id="${id}"]`);
+  if (!row) {
+    await showHistory({ minId: id });
+    row = document.querySelector(`.msg[data-id="${id}"]`);
+  }
+  if (!row) return toast('Ce message a été supprimé.');
   row.scrollIntoView({ block: 'center', behavior: 'smooth' });
   row.classList.add('flash');
   setTimeout(() => row.classList.remove('flash'), 1300);
-}
+});
+const jumpTo = (id) => goToMessage(current.id, id);
 
 // ---------- Messages ----------
 function actionButton(label, title, onClick) {
@@ -511,15 +566,229 @@ function actionButton(label, title, onClick) {
   btn.onclick = onClick;
   return btn;
 }
+// (Re)dessine le texte d'un message : liens, @mentions et mention « modifié »
+function renderBody(row, m) {
+  const body = row.querySelector('.body');
+  if (!body) return;
+  body.replaceChildren();
+  if (m.poll || !m.text) {
+    body.hidden = true;
+    return;
+  }
+  body.hidden = false;
+  renderText(body, m.text);
+  if (m.edited_at) {
+    const tag = document.createElement('span');
+    tag.className = 'edited';
+    tag.textContent = '(modifié)';
+    tag.title = `Modifié à ${fmtTime(m.edited_at)}`;
+    body.append(' ', tag);
+  }
+}
+function applyEdit({ id, text, edited_at }) {
+  const m = msgById.get(id);
+  if (!m) return;
+  m.text = text;
+  m.edited_at = edited_at;
+  const row = document.querySelector(`.msg[data-id="${id}"]`);
+  if (row) {
+    renderBody(row, m);
+    row.classList.toggle('mentioned', m.user_id !== me.id && mentionsMe(text));
+  }
+  const pin = pins.find((p) => p.id === id);
+  if (pin) {
+    pin.text = text;
+    renderPinsBar();
+  }
+}
+function startEdit(row, m) {
+  const body = row.querySelector('.body');
+  if (!body || row.querySelector('.edit-box')) return;
+  const box = document.createElement('div');
+  box.className = 'edit-box';
+  const input = document.createElement('input');
+  input.maxLength = 1000;
+  input.value = m.text || '';
+  const save = actionButton('Enregistrer', 'Enregistrer la modification', null);
+  const cancel = actionButton('Annuler', 'Annuler', null);
+  const close = () => {
+    box.remove();
+    renderBody(row, m);
+  };
+  save.onclick = guard(async () => {
+    const text = input.value.trim();
+    if (text === (m.text || '')) return close();
+    await b.editMessage(m.id, text);
+    applyEdit({ id: m.id, text, edited_at: new Date().toISOString() });
+    box.remove();
+  });
+  cancel.onclick = close;
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      save.click();
+    } else if (e.key === 'Escape') {
+      e.stopPropagation();
+      close();
+    }
+  });
+  box.append(input, save, cancel);
+  body.hidden = true;
+  body.after(box);
+  input.focus();
+}
+
+// ---------- Sondages ----------
+function renderPoll(row, poll) {
+  const box = row.querySelector('.poll');
+  if (!box) return;
+  pollsByMsg.set(poll.message_id, poll);
+  const voters = new Set(poll.options.flatMap((o) => o.votes));
+  const total = voters.size;
+  const names = new Map(b.people().map((p) => [p.id, p.pseudo]));
+  const q = document.createElement('div');
+  q.className = 'poll-q';
+  q.textContent = `📊 ${poll.question}`;
+  const opts = poll.options.map((o) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `poll-opt${o.votes.includes(me.id) ? ' mine' : ''}`;
+    btn.disabled = poll.closed;
+    const pct = total ? Math.round((o.votes.length / total) * 100) : 0;
+    const bar = document.createElement('span');
+    bar.className = 'bar';
+    bar.style.width = `${pct}%`;
+    const lbl = document.createElement('span');
+    lbl.className = 'lbl';
+    lbl.textContent = o.label;
+    const num = document.createElement('span');
+    num.className = 'pct';
+    num.textContent = `${o.votes.length} · ${pct}%`;
+    btn.title = o.votes.length ? o.votes.map((u) => names.get(u) || '???').join(', ') : 'Aucun vote';
+    btn.append(bar, num, lbl);
+    btn.onclick = () => votePollUi(poll, o);
+    return btn;
+  });
+  const meta = document.createElement('div');
+  meta.className = 'poll-meta';
+  const info = document.createElement('span');
+  info.textContent = `${total} votant${total > 1 ? 's' : ''} · ${poll.multiple ? 'plusieurs choix' : 'un seul choix'}${poll.closed ? ' · terminé 🔒' : ''}`;
+  meta.append(info);
+  if (!poll.closed && (poll.created_by === me.id || isAdmin())) {
+    const end = document.createElement('button');
+    end.type = 'button';
+    end.textContent = 'Terminer';
+    end.onclick = guard(async () => {
+      if (!confirm('Terminer ce sondage ? Plus personne ne pourra voter.')) return;
+      await b.closePoll(poll.id);
+      poll.closed = true;
+      renderPoll(row, poll);
+    });
+    meta.append(end);
+  }
+  box.replaceChildren(q, ...opts, meta);
+}
+const votePollUi = guard(async (poll, opt) => {
+  const has = opt.votes.includes(me.id);
+  if (!has && !poll.multiple) poll.options.forEach((o) => (o.votes = o.votes.filter((u) => u !== me.id)));
+  opt.votes = has ? opt.votes.filter((u) => u !== me.id) : [...opt.votes, me.id];
+  renderPoll(document.querySelector(`.msg[data-id="${poll.message_id}"]`), poll); // affichage immédiat
+  try {
+    await b.votePoll(poll.id, opt.id, !has);
+  } catch (err) {
+    await refreshPolls();
+    throw err;
+  }
+});
+// Recharge les sondages affichés (votes des autres, sondage terminé…)
+async function refreshPolls() {
+  const ids = [...pollsByMsg.keys()];
+  if (!ids.length) return;
+  const fresh = await b.polls(ids);
+  for (const [mid, poll] of fresh) renderPoll(document.querySelector(`.msg[data-id="${mid}"]`), poll);
+}
+
+// ---------- Messages épinglés ----------
+const canPin = (room) => !!room && (!room.is_common || isAdmin());
+async function refreshPins() {
+  const room = current;
+  if (!room) return;
+  const list = await b.pins(room.id);
+  if (room !== current) return;
+  pins = list;
+  renderPinsBar();
+}
+function renderPinsBar() {
+  const bar = $('pins-bar');
+  bar.hidden = !pins.length;
+  if (!pins.length) return;
+  const p = pins[0];
+  const who = document.createElement('b');
+  who.textContent = p.pseudo;
+  $('pin-text').replaceChildren(who, ` ${snippet(p.text, p.image_path || p.file_name) || '(sondage)'}`);
+  $('pin-count').textContent = pins.length > 1 ? `+${pins.length - 1}` : '';
+}
+const togglePin = guard(async (m) => {
+  await b.pin(m.id, !pins.some((p) => p.id === m.id));
+  await refreshPins();
+});
+$('pins-bar').onclick = () => {
+  $('pins-error').textContent = '';
+  renderPinsList();
+  $('dlg-pins').showModal();
+};
+function renderPinsList() {
+  $('pins-list').replaceChildren(...pins.map((p) => {
+    const row = document.createElement('div');
+    row.className = 'result-row';
+    const go = document.createElement('button');
+    go.type = 'button';
+    go.className = 'result';
+    const head = document.createElement('div');
+    head.className = 'r-head';
+    const who = document.createElement('b');
+    who.textContent = p.pseudo;
+    head.append(who, new Date(p.created_at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }), `épinglé par ${p.pinned_by}`);
+    const text = document.createElement('div');
+    text.className = 'r-text';
+    text.textContent = snippet(p.text, p.image_path || p.file_name) || '(sondage)';
+    go.append(head, text);
+    go.onclick = () => {
+      $('dlg-pins').close();
+      goToMessage(current.id, p.id);
+    };
+    row.append(go);
+    if (canPin(current)) {
+      const un = document.createElement('button');
+      un.type = 'button';
+      un.className = 'add';
+      un.textContent = 'Désépingler';
+      un.onclick = async () => {
+        try {
+          await b.pin(p.id, false);
+          await refreshPins();
+          renderPinsList();
+        } catch (err) {
+          $('pins-error').textContent = err.message;
+        }
+      };
+      row.append(un);
+    }
+    return row;
+  }));
+}
+
 function addMessage(m) {
   const box = $('messages');
   const mine = m.user_id === me.id;
   const t = new Date(m.created_at).getTime();
-  const cont = lastMsg && lastMsg.user_id === m.user_id && t - lastMsg.t < 120_000 && !m.reply;
+  const cont = lastMsg && lastMsg.user_id === m.user_id && t - lastMsg.t < 120_000 && !m.reply && !m.poll;
   lastMsg = { user_id: m.user_id, t };
+  msgById.set(m.id, m);
 
   const row = document.createElement('div');
   row.className = `msg ${mine ? 'mine' : ''} ${cont ? 'cont' : 'first'}`;
+  if (!mine && !m.poll && mentionsMe(m.text)) row.classList.add('mentioned');
   row.dataset.id = m.id;
 
   const bubble = document.createElement('div');
@@ -547,11 +816,43 @@ function addMessage(m) {
     q.onclick = () => jumpTo(m.reply.id);
     bubble.append(q);
   }
-  if (m.text) {
-    const body = document.createElement('div');
-    body.className = 'body';
-    renderText(body, m.text);
-    bubble.append(body);
+  const body = document.createElement('div');
+  body.className = 'body';
+  bubble.append(body);
+  if (m.poll) {
+    const poll = document.createElement('div');
+    poll.className = 'poll';
+    bubble.append(poll);
+  }
+  if (m.file_path) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'file-card';
+    card.title = 'Télécharger';
+    const ico = document.createElement('span');
+    ico.className = 'ico';
+    ico.textContent = fileIcon(m.file_name);
+    const info = document.createElement('span');
+    info.className = 'info';
+    const nm = document.createElement('div');
+    nm.className = 'nm';
+    nm.textContent = m.file_name;
+    const sz = document.createElement('div');
+    sz.className = 'sz';
+    sz.textContent = `${fileExt(m.file_name).toUpperCase()} · ${formatSize(m.file_size || 0)} · Télécharger`;
+    info.append(nm, sz);
+    card.append(ico, info);
+    card.onclick = guard(async () => {
+      const url = await b.fileUrl(m.file_path, m.file_name);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = m.file_name;
+      a.rel = 'noopener';
+      document.body.append(a);
+      a.click();
+      a.remove();
+    });
+    bubble.append(card);
   }
   if (m.image_path) {
     const img = document.createElement('img');
@@ -590,6 +891,18 @@ function addMessage(m) {
       setReply(m);
     }),
   );
+  if (mine && !m.poll) {
+    actions.append(actionButton('✏', 'Modifier', () => {
+      row.classList.remove('show-actions');
+      startEdit(row, m);
+    }));
+  }
+  if (canPin(current)) {
+    actions.append(actionButton('📌', 'Épingler / désépingler', () => {
+      row.classList.remove('show-actions');
+      togglePin(m);
+    }));
+  }
   if (mine || isAdmin()) {
     actions.append(actionButton('🗑', mine ? 'Supprimer' : 'Supprimer (admin)', guard(async () => {
       const ok = confirm(mine ? 'Supprimer ce message ?' : `Supprimer ce message de ${m.pseudo} ?`);
@@ -607,6 +920,8 @@ function addMessage(m) {
 
   row.append(makeAvatar(m.pseudo, 34), bubble);
   box.append(row);
+  renderBody(row, m);
+  if (m.poll) renderPoll(row, m.poll);
   reactionsById.set(m.id, [...(m.reactions || [])]);
   renderReactions(m.id);
 }
@@ -620,7 +935,7 @@ $('composer').addEventListener('submit', guard(async (e) => {
   $('emoji-panel').hidden = true;
   clearReply();
   try {
-    await b.send(current.id, text, null, reply?.id ?? null);
+    await b.send(current.id, text, { replyTo: reply?.id ?? null });
   } catch (err) {
     $('text').value = text; // on ne perd pas le message
     if (reply) setReply({ id: reply.id, pseudo: reply.pseudo, text: reply.text });
@@ -659,15 +974,55 @@ const sendImage = guard(async (file) => {
   const path = await b.upload(file);
   const caption = $('text').value.trim();
   const reply = replyTo;
-  await b.send(current.id, caption, path, reply?.id ?? null);
+  await b.send(current.id, caption, { image: path, replyTo: reply?.id ?? null });
   $('text').value = '';
   clearReply();
 });
+// Documents (PDF, Word, Excel…) : 10 Mo max
+const sendDocument = guard(async (file) => {
+  if (!FILE_TYPES[fileExt(file.name)]) throw new Error('Type de fichier non accepté (PDF, Word, Excel, PowerPoint, texte, CSV, ZIP…).');
+  toast('Envoi du fichier…');
+  const info = await b.uploadFile(file);
+  const caption = $('text').value.trim();
+  const reply = replyTo;
+  await b.send(current.id, caption, { file: info, replyTo: reply?.id ?? null });
+  $('text').value = '';
+  clearReply();
+  $('toast').hidden = true;
+});
+// Image ou document : on choisit selon le type du fichier
+const sendPicked = (file) => {
+  if (!file) return;
+  if (file.type.startsWith('image/')) sendImage(file);
+  else sendDocument(file);
+};
 $('img-btn').onclick = () => $('file').click();
-$('file').onchange = (e) => { sendImage(e.target.files[0]); e.target.value = ''; };
+$('file').onchange = (e) => { sendPicked(e.target.files[0]); e.target.value = ''; };
 document.addEventListener('paste', (e) => {
   const file = [...(e.clipboardData?.files || [])].find((f) => f.type.startsWith('image/'));
   if (file && !$('app').hidden) sendImage(file);
+});
+// Glisser-déposer un fichier dans le chat
+const chatEl = document.querySelector('.chat');
+let dragDepth = 0;
+chatEl.addEventListener('dragenter', (e) => {
+  if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
+  e.preventDefault();
+  dragDepth++;
+  chatEl.classList.add('dragover');
+});
+chatEl.addEventListener('dragover', (e) => {
+  if ([...(e.dataTransfer?.types || [])].includes('Files')) e.preventDefault();
+});
+chatEl.addEventListener('dragleave', () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) chatEl.classList.remove('dragover');
+});
+chatEl.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  chatEl.classList.remove('dragover');
+  sendPicked(e.dataTransfer?.files?.[0]);
 });
 function openLightbox(src) {
   $('lightbox').querySelector('img').src = src;
@@ -924,6 +1279,7 @@ $('profile-btn').onclick = guard(async () => {
   $('profile-name').textContent = me.pseudo;
   $('profile-admin').hidden = !isAdmin();
   renderColorChoice();
+  renderAppearance();
   $('pref-sound').checked = prefs.sound;
   $('pref-desktop').checked = prefs.desktop && 'Notification' in window && Notification.permission === 'granted';
   renderDesktopHint();
@@ -979,6 +1335,223 @@ $('pw-form').addEventListener('submit', async (e) => {
     msg.textContent = 'Mot de passe changé ✅';
   } catch (err) {
     fail(err.message);
+  }
+});
+
+// ---------- Apparence : thème, couleur du site, fond, taille du texte ----------
+function loadAppearance() {
+  // Les réglages du compte (synchronisés) priment ; sinon ceux déjà choisis dans ce navigateur
+  const server = Theme.normalize((b.me() || me)?.settings);
+  if (Object.keys(server).length) {
+    appearance = server;
+    Theme.save(appearance);
+  } else {
+    appearance = Theme.load();
+  }
+  Theme.apply(appearance);
+}
+let pushTimer = null;
+function setAppearance(patch, { render = true, reset = false } = {}) {
+  appearance = Theme.normalize(reset ? {} : { ...appearance, ...patch });
+  Theme.apply(appearance);
+  Theme.save(appearance);
+  if (render) renderAppearance();
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => b.setSettings(appearance).catch((e) => toast(e.message)), 500);
+}
+function segButton(label, selected, onClick) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = label;
+  if (selected) btn.classList.add('sel');
+  btn.onclick = onClick;
+  return btn;
+}
+function renderAppearance() {
+  const a = appearance;
+  $('theme-mode').replaceChildren(...[['dark', '🌙 Sombre'], ['light', '☀️ Clair'], ['auto', '🖥 Auto']]
+    .map(([id, label]) => segButton(label, (a.theme || 'dark') === id, () => setAppearance({ theme: id }))));
+
+  const colors = Theme.THEMES.map((t) => {
+    const isDefault = t.id === 'violet' && !a.accent;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.title = t.name;
+    btn.style.background = `linear-gradient(135deg, ${t.a}, ${t.b})`;
+    if (isDefault || (a.accent === t.a && a.accent2 === t.b)) btn.classList.add('sel');
+    btn.onclick = () => setAppearance({ accent: t.a, accent2: t.b });
+    return btn;
+  });
+  const custom = document.createElement('label');
+  custom.title = 'N\'importe quelle couleur';
+  const picker = document.createElement('input');
+  picker.type = 'color';
+  picker.value = a.accent || '#7c5cff';
+  picker.addEventListener('input', () => setAppearance({ accent: picker.value, accent2: Theme.shift(picker.value, 40) }, { render: false }));
+  picker.addEventListener('change', () => renderAppearance());
+  custom.append(picker, 'Couleur perso');
+  $('theme-colors').replaceChildren(...colors, custom);
+
+  $('bg-choice').replaceChildren(...Theme.BGS.map((o) => segButton(o.name, (a.bg || 'none') === o.id, () => setAppearance({ bg: o.id }))));
+  $('font-choice').replaceChildren(...[['s', 'Petit'], ['m', 'Normal'], ['l', 'Grand']]
+    .map(([id, label]) => segButton(label, (a.font || 'm') === id, () => setAppearance({ font: id }))));
+}
+$('appearance-reset').onclick = () => setAppearance({}, { reset: true });
+
+// ---------- @mentions : auto-complétion dans la zone de saisie ----------
+const mentionList = $('mention-list');
+let mention = { items: [], sel: 0, start: 0 };
+function hideMentions() {
+  mentionList.hidden = true;
+  mention.items = [];
+}
+function renderMentionList() {
+  mentionList.replaceChildren(...mention.items.map((p, i) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `mention-item${i === mention.sel ? ' sel' : ''}`;
+    btn.append(makeAvatar(p.pseudo, 22), p.pseudo);
+    btn.onmousedown = (e) => {
+      e.preventDefault(); // garde le focus dans la zone de saisie
+      pickMention(p);
+    };
+    return btn;
+  }));
+  mentionList.hidden = false;
+}
+let peopleCheckedAt = 0;
+function updateMentions() {
+  const input = $('text');
+  const caret = input.selectionStart ?? input.value.length;
+  const found = /(^|\s)@([^\s@]{0,20})$/.exec(input.value.slice(0, caret));
+  if (!found) return hideMentions();
+  // des comptes ont pu être créés depuis l'ouverture : on rafraîchit la liste (au plus toutes les 20 s)
+  if (Date.now() - peopleCheckedAt > 20_000) {
+    peopleCheckedAt = Date.now();
+    b.refreshPeople().then(updateMentions).catch(() => {});
+  }
+  const q = found[2].toLowerCase();
+  const pool = current?.is_common ? b.people() : roomMembers;
+  const items = pool.filter((p) => p.id !== me.id && p.pseudo.toLowerCase().startsWith(q)).slice(0, 6);
+  if (!items.length) return hideMentions();
+  mention = { items, sel: 0, start: caret - found[2].length - 1 };
+  renderMentionList();
+}
+function pickMention(p) {
+  const input = $('text');
+  const caret = input.selectionStart ?? input.value.length;
+  input.value = `${input.value.slice(0, mention.start)}@${p.pseudo} ${input.value.slice(caret)}`;
+  const pos = mention.start + p.pseudo.length + 2;
+  input.setSelectionRange(pos, pos);
+  hideMentions();
+  input.focus();
+}
+$('text').addEventListener('input', updateMentions);
+$('text').addEventListener('keydown', (e) => {
+  if (mentionList.hidden) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const n = mention.items.length;
+    mention.sel = (mention.sel + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+    renderMentionList();
+  } else if (e.key === 'Enter' || e.key === 'Tab') {
+    e.preventDefault();
+    pickMention(mention.items[mention.sel]);
+  } else if (e.key === 'Escape') {
+    e.stopPropagation();
+    hideMentions();
+  }
+});
+$('text').addEventListener('blur', () => setTimeout(hideMentions, 150));
+
+// ---------- Recherche ----------
+const dlgSearch = $('dlg-search');
+$('search-btn').onclick = () => {
+  $('search-error').textContent = '';
+  $('search-results').replaceChildren();
+  dlgSearch.showModal();
+  $('search-q').focus();
+};
+function highlightInto(el, text, query) {
+  const low = text.toLowerCase();
+  const q = query.toLowerCase();
+  let from = 0;
+  for (let i = low.indexOf(q); i >= 0; i = low.indexOf(q, from)) {
+    el.append(text.slice(from, i));
+    const mark = document.createElement('mark');
+    mark.textContent = text.slice(i, i + q.length);
+    el.append(mark);
+    from = i + q.length;
+  }
+  el.append(text.slice(from));
+}
+$('search-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const q = $('search-q').value.trim();
+  if (q.length < 2) return ($('search-error').textContent = 'Tape au moins 2 caractères.');
+  $('search-error').textContent = '';
+  const all = $('search-all').checked;
+  try {
+    const found = await b.search(q, all ? null : current.id);
+    $('search-results').replaceChildren(...found.map((m) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'result';
+      const head = document.createElement('div');
+      head.className = 'r-head';
+      const who = document.createElement('b');
+      who.textContent = m.pseudo;
+      head.append(who, new Date(m.created_at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }));
+      const room = rooms.find((r) => r.id === m.room_id);
+      if (all && room) head.append(roomLabel(room));
+      const text = document.createElement('div');
+      text.className = 'r-text';
+      highlightInto(text, snippet(m.text, m.image_path || m.file_name) || '', q);
+      btn.append(head, text);
+      btn.onclick = () => {
+        dlgSearch.close();
+        goToMessage(m.room_id, m.id);
+      };
+      return btn;
+    }));
+    if (!found.length) $('search-error').textContent = 'Aucun message trouvé.';
+  } catch (err) {
+    $('search-error').textContent = err.message;
+  }
+});
+
+// ---------- Sondages : création ----------
+const dlgPoll = $('dlg-poll');
+function pollInput() {
+  const input = document.createElement('input');
+  input.maxLength = 80;
+  input.placeholder = `Choix ${$('poll-options').children.length + 1}`;
+  return input;
+}
+$('poll-btn').onclick = () => {
+  $('poll-question').value = '';
+  $('poll-multiple').checked = false;
+  $('poll-error').textContent = '';
+  $('poll-options').replaceChildren();
+  $('poll-options').append(pollInput());
+  $('poll-options').append(pollInput());
+  dlgPoll.showModal();
+  $('poll-question').focus();
+};
+$('poll-add').onclick = () => {
+  const box = $('poll-options');
+  if (box.children.length >= 6) return ($('poll-error').textContent = '6 choix maximum.');
+  const input = pollInput();
+  box.append(input);
+  input.focus();
+};
+$('poll-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await b.createPoll(current.id, $('poll-question').value, [...$('poll-options').children].map((i) => i.value), $('poll-multiple').checked);
+    dlgPoll.close();
+  } catch (err) {
+    $('poll-error').textContent = err.message;
   }
 });
 

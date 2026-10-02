@@ -1,6 +1,35 @@
 export const PSEUDO_RE = /^[\p{L}\p{N}_\- ]{2,20}$/u;
 export const MAX_IMAGE = 5 * 1024 * 1024;
+export const MAX_FILE = 10 * 1024 * 1024;
 export const MIN_PASSWORD = 8;
+
+// Documents acceptés (extension -> type MIME). Pas d'exécutables, pas de HTML/SVG.
+export const FILE_TYPES = {
+  pdf: 'application/pdf',
+  txt: 'text/plain',
+  csv: 'text/csv',
+  zip: 'application/zip',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ppt: 'application/vnd.ms-powerpoint',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  odt: 'application/vnd.oasis.opendocument.text',
+  ods: 'application/vnd.oasis.opendocument.spreadsheet',
+  odp: 'application/vnd.oasis.opendocument.presentation',
+};
+export const fileExt = (name) => (String(name).split('.').pop() || '').toLowerCase();
+export const fileIcon = (name) => {
+  const e = fileExt(name);
+  if (e === 'pdf') return '📕';
+  if (['doc', 'docx', 'odt', 'txt'].includes(e)) return '📄';
+  if (['xls', 'xlsx', 'ods', 'csv'].includes(e)) return '📊';
+  if (['ppt', 'pptx', 'odp'].includes(e)) return '📽️';
+  if (e === 'zip') return '🗜️';
+  return '📎';
+};
+export const formatSize = (n) => (n < 1024 ? `${n} o` : n < 1048576 ? `${Math.round(n / 1024)} Ko` : `${(n / 1048576).toFixed(1)} Mo`);
 export const AVATAR_COLORS = ['#7c5cff', '#ff5fa2', '#ff8a3d', '#f5c542', '#3ddc84', '#2fc4c4', '#3d9bff', '#b05cff', '#ff5555', '#8d99ae', '#a0522d', '#14b8a6'];
 export const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
 export const AVATAR_SIZE = 256;

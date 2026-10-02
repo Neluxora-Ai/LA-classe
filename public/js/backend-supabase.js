@@ -1,4 +1,6 @@
-import { IMAGE_EXT, MAX_IMAGE, MIN_PASSWORD, mkEmitter, pseudoToEmail } from './shared.js';
+import { FILE_TYPES, IMAGE_EXT, MAX_FILE, MAX_IMAGE, MIN_PASSWORD, fileExt, mkEmitter, pseudoToEmail } from './shared.js';
+
+const MSG_COLS = 'id, room_id, user_id, text, image_path, created_at, reply_to, edited_at, file_path, file_name, file_size';
 
 export function createSupabaseBackend({ url, key }) {
   const sb = window.supabase.createClient(url, key, {
@@ -6,12 +8,12 @@ export function createSupabaseBackend({ url, key }) {
   });
   const { on, emit } = mkEmitter();
   let me = null;
-  let profiles = new Map(); // id -> { pseudo, color, is_admin }
+  let profiles = new Map(); // id -> { pseudo, color, is_admin, avatar_path, settings }
   let colors = new Map(); // pseudo -> couleur d'avatar choisie
   let dbChannel = null;
   let presenceChannel = null;
   const signed = new Map(); // path -> { url, exp }
-  const msgCache = new Map(); // id -> { user_id, text, image_path } (pour afficher les citations)
+  const msgCache = new Map(); // id -> { user_id, text, image_path, file_name } (pour afficher les citations)
 
   const fail = (error) => {
     if (error) throw new Error(error.message || 'Erreur');
@@ -32,30 +34,63 @@ export function createSupabaseBackend({ url, key }) {
   }
 
   async function loadProfiles() {
-    const { data, error } = await sb.from('profiles').select('id, pseudo, color, is_admin, avatar_path');
+    const { data, error } = await sb.from('profiles').select('id, pseudo, color, is_admin, avatar_path, settings');
     fail(error);
-    profiles = new Map(data.map((p) => [p.id, { pseudo: p.pseudo, color: p.color, is_admin: p.is_admin, avatar_path: p.avatar_path }]));
+    profiles = new Map(data.map((p) => [p.id, { pseudo: p.pseudo, color: p.color, is_admin: p.is_admin, avatar_path: p.avatar_path, settings: p.settings || {} }]));
     colors = new Map(data.filter((p) => p.color).map((p) => [p.pseudo, p.color]));
     await signAvatars(data);
-    if (me && profiles.has(me.id)) Object.assign(me, { color: profiles.get(me.id).color, is_admin: profiles.get(me.id).is_admin });
+    if (me && profiles.has(me.id)) {
+      const mine = profiles.get(me.id);
+      Object.assign(me, { color: mine.color, is_admin: mine.is_admin, settings: mine.settings });
+    }
     return profiles;
   }
 
-  const remember = (m) => msgCache.set(m.id, { user_id: m.user_id, text: m.text, image_path: m.image_path });
+  const remember = (m) => msgCache.set(m.id, { user_id: m.user_id, text: m.text, image_path: m.image_path, file_name: m.file_name });
   function replyInfo(id) {
     if (!id) return null;
     const c = msgCache.get(id);
     if (!c) return { id, pseudo: '???', text: 'message introuvable', image: false };
-    return { id, pseudo: pseudoOf(c.user_id), text: c.text, image: !!c.image_path };
+    return { id, pseudo: pseudoOf(c.user_id), text: c.text, image: !!(c.image_path || c.file_name) };
   }
   async function loadReplyTargets(ids) {
     const missing = [...new Set(ids.filter((id) => id && !msgCache.has(id)))];
     if (!missing.length) return;
-    const { data, error } = await sb.from('messages').select('id, user_id, text, image_path').in('id', missing);
+    const { data, error } = await sb.from('messages').select(MSG_COLS).in('id', missing);
     fail(error);
     data.forEach(remember);
   }
-  const full = (m, reactions = []) => ({ ...m, pseudo: pseudoOf(m.user_id), reactions, reply: replyInfo(m.reply_to) });
+  const full = (m, reactions = [], poll = null) => ({ ...m, pseudo: pseudoOf(m.user_id), reactions, reply: replyInfo(m.reply_to), poll });
+
+  // Sondages : question + choix + votes, regroupés par message
+  async function loadPolls(messageIds) {
+    if (!messageIds.length) return new Map();
+    const { data: polls, error } = await sb
+      .from('polls')
+      .select('id, message_id, question, multiple, closed, created_by')
+      .in('message_id', messageIds);
+    fail(error);
+    if (!polls.length) return new Map();
+    const pids = polls.map((p) => p.id);
+    const [o, v] = await Promise.all([
+      sb.from('poll_options').select('id, poll_id, label, position').in('poll_id', pids),
+      sb.from('poll_votes').select('option_id, poll_id, user_id').in('poll_id', pids),
+    ]);
+    fail(o.error);
+    fail(v.error);
+    return new Map(polls.map((p) => [p.message_id, {
+      id: p.id,
+      message_id: p.message_id,
+      question: p.question,
+      multiple: p.multiple,
+      closed: p.closed,
+      created_by: p.created_by,
+      options: o.data
+        .filter((x) => x.poll_id === p.id)
+        .sort((a, b) => a.position - b.position)
+        .map((x) => ({ id: x.id, label: x.label, votes: v.data.filter((y) => y.option_id === x.id).map((y) => y.user_id) })),
+    }]));
+  }
 
   async function loadSession() {
     const { data } = await sb.auth.getSession();
@@ -66,7 +101,7 @@ export function createSupabaseBackend({ url, key }) {
       await sb.auth.signOut();
       return null;
     }
-    me = { id: data.session.user.id, pseudo: p.pseudo, color: p.color, is_admin: p.is_admin };
+    me = { id: data.session.user.id, pseudo: p.pseudo, color: p.color, is_admin: p.is_admin, settings: p.settings };
     return me;
   }
 
@@ -110,6 +145,10 @@ export function createSupabaseBackend({ url, key }) {
     async setColor(color) {
       fail((await sb.rpc('set_my_color', { p_color: color })).error);
       await loadProfiles();
+    },
+    async setSettings(settings) {
+      fail((await sb.rpc('set_my_settings', { p_settings: settings })).error);
+      if (me) me.settings = settings;
     },
 
     avatar: (pseudo) => avatars.get(pseudo) || '',
@@ -202,40 +241,53 @@ export function createSupabaseBackend({ url, key }) {
       await loadProfiles();
     },
 
-    async history(roomId) {
-      const { data, error } = await sb
-        .from('messages')
-        .select('id, room_id, user_id, text, image_path, created_at, reply_to')
-        .eq('room_id', roomId)
-        .order('id', { ascending: false })
-        .limit(100);
+    // Les 100 derniers messages du salon (ou tous ceux depuis minId, pour sauter à un vieux message)
+    async history(roomId, { minId = null } = {}) {
+      let q = sb.from('messages').select(MSG_COLS).eq('room_id', roomId);
+      q = minId ? q.gte('id', minId).order('id', { ascending: true }).limit(300) : q.order('id', { ascending: false }).limit(100);
+      const { data, error } = await q;
       fail(error);
       if (data.some((m) => !profiles.has(m.user_id))) await loadProfiles();
-      const msgs = data.reverse();
+      const msgs = minId ? data : data.reverse();
       msgs.forEach(remember);
       await loadReplyTargets(msgs.map((m) => m.reply_to));
       let reacts = [];
+      let polls = new Map();
       if (msgs.length) {
-        const r = await sb.from('message_reactions').select('message_id, user_id, emoji').in('message_id', msgs.map((m) => m.id));
+        const ids = msgs.map((m) => m.id);
+        const r = await sb.from('message_reactions').select('message_id, user_id, emoji').in('message_id', ids);
         fail(r.error);
         reacts = r.data;
+        polls = await loadPolls(msgs.filter((m) => m.text.startsWith('📊 ')).map((m) => m.id));
       }
       return msgs.map((m) =>
-        full(m, reacts.filter((r) => r.message_id === m.id).map(({ user_id, emoji }) => ({ user_id, emoji }))),
+        full(m, reacts.filter((r) => r.message_id === m.id).map(({ user_id, emoji }) => ({ user_id, emoji })), polls.get(m.id) || null),
       );
     },
 
-    async send(roomId, text, imagePath = null, replyTo = null) {
-      const { error } = await sb
-        .from('messages')
-        .insert({ room_id: roomId, user_id: me.id, text, image_path: imagePath, reply_to: replyTo });
+    async send(roomId, text, { image = null, file = null, replyTo = null } = {}) {
+      const { error } = await sb.from('messages').insert({
+        room_id: roomId,
+        user_id: me.id,
+        text,
+        image_path: image,
+        reply_to: replyTo,
+        file_path: file?.path ?? null,
+        file_name: file?.name ?? null,
+        file_size: file?.size ?? null,
+      });
       fail(error);
+    },
+
+    async editMessage(id, text) {
+      fail((await sb.rpc('edit_message', { p_id: id, p_text: text })).error);
     },
 
     async remove(msg) {
       const { error } = await sb.from('messages').delete().eq('id', msg.id);
       fail(error);
       if (msg.image_path) sb.storage.from('images').remove([msg.image_path]);
+      if (msg.file_path) sb.storage.from('files').remove([msg.file_path]);
     },
 
     async react(messageId, emoji, add) {
@@ -243,6 +295,62 @@ export function createSupabaseBackend({ url, key }) {
         ? sb.from('message_reactions').insert({ message_id: messageId, user_id: me.id, emoji })
         : sb.from('message_reactions').delete().eq('message_id', messageId).eq('user_id', me.id).eq('emoji', emoji);
       fail((await q).error);
+    },
+
+    // Messages épinglés
+    async pins(roomId) {
+      const { data, error } = await sb
+        .from('pinned_messages')
+        .select('message_id, pinned_at, pinned_by')
+        .eq('room_id', roomId)
+        .order('pinned_at', { ascending: false });
+      fail(error);
+      if (!data.length) return [];
+      const { data: ms, error: e2 } = await sb.from('messages').select(MSG_COLS).in('id', data.map((p) => p.message_id));
+      fail(e2);
+      if (ms.some((m) => !profiles.has(m.user_id))) await loadProfiles();
+      ms.forEach(remember);
+      return data
+        .map((p) => {
+          const m = ms.find((x) => x.id === p.message_id);
+          return m ? { ...full(m), pinned_by: pseudoOf(p.pinned_by), pinned_at: p.pinned_at } : null;
+        })
+        .filter(Boolean);
+    },
+    async pin(messageId, on) {
+      fail((await sb.rpc('pin_message', { p_id: messageId, p_pin: on })).error);
+    },
+
+    // Sondages
+    async createPoll(roomId, question, options, multiple) {
+      const { data, error } = await sb.rpc('create_poll', { p_room: roomId, p_question: question, p_options: options, p_multiple: !!multiple });
+      fail(error);
+      return data;
+    },
+    async votePoll(pollId, optionId, on) {
+      fail((await sb.rpc('vote_poll', { p_poll: pollId, p_option: optionId, p_on: on })).error);
+    },
+    async closePoll(pollId) {
+      fail((await sb.rpc('close_poll', { p_poll: pollId })).error);
+    },
+    async polls(messageIds) {
+      return loadPolls(messageIds);
+    },
+
+    // Recherche dans les messages (d'un salon, ou de tous ceux auxquels on a accès)
+    async search(query, roomId = null) {
+      const esc = query.replace(/[\\%_]/g, (c) => `\\${c}`);
+      let q = sb
+        .from('messages')
+        .select('id, room_id, user_id, text, image_path, file_name, created_at')
+        .ilike('text', `%${esc}%`)
+        .order('id', { ascending: false })
+        .limit(40);
+      if (roomId) q = q.eq('room_id', roomId);
+      const { data, error } = await q;
+      fail(error);
+      if (data.some((m) => !profiles.has(m.user_id))) await loadProfiles();
+      return data.map((m) => ({ ...m, pseudo: pseudoOf(m.user_id) }));
     },
 
     async upload(file) {
@@ -253,6 +361,22 @@ export function createSupabaseBackend({ url, key }) {
       const { error } = await sb.storage.from('images').upload(path, file, { contentType: file.type });
       fail(error);
       return path;
+    },
+
+    // Documents (PDF, Word, Excel…) : bucket privé « files », 10 Mo max
+    async uploadFile(file) {
+      const ext = fileExt(file.name);
+      if (!FILE_TYPES[ext]) throw new Error('Type de fichier non accepté (PDF, Word, Excel, PowerPoint, texte, CSV, ZIP…).');
+      if (file.size > MAX_FILE) throw new Error('Fichier trop gros (10 Mo max).');
+      const path = `${me.id}/${crypto.randomUUID()}.${ext}`;
+      const { error } = await sb.storage.from('files').upload(path, file, { contentType: FILE_TYPES[ext] });
+      fail(error);
+      return { path, name: file.name.replace(/[/\\]/g, '_').slice(0, 120), size: file.size };
+    },
+    async fileUrl(path, name) {
+      const { data, error } = await sb.storage.from('files').createSignedUrl(path, 600, { download: name });
+      fail(error);
+      return data.signedUrl;
     },
 
     async imageUrl(path) {
@@ -271,10 +395,16 @@ export function createSupabaseBackend({ url, key }) {
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async (p) => {
           if (!profiles.has(p.new.user_id)) await loadProfiles();
           remember(p.new);
+          let poll = null;
           try {
             await loadReplyTargets([p.new.reply_to]);
+            if (p.new.text.startsWith('📊 ')) poll = (await loadPolls([p.new.id])).get(p.new.id) || null;
           } catch {}
-          emit('message', full(p.new));
+          emit('message', full(p.new, [], poll));
+        })
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, (p) => {
+          remember(p.new);
+          emit('edited', { id: p.new.id, text: p.new.text, edited_at: p.new.edited_at });
         })
         .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, (p) =>
           emit('deleted', { id: p.old.id }),
@@ -285,6 +415,9 @@ export function createSupabaseBackend({ url, key }) {
         .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'message_reactions' }, (p) =>
           emit('reaction', { type: 'remove', message_id: p.old.message_id, user_id: p.old.user_id, emoji: p.old.emoji }),
         )
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'pinned_messages' }, () => emit('pins', {}))
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'poll_votes' }, (p) => emit('poll', { poll_id: p.new?.poll_id || null }))
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'polls' }, (p) => emit('poll', { poll_id: p.new.id }))
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'room_members' }, async (p) => {
           if (!profiles.has(p.new.user_id)) await loadProfiles();
           emit(p.new.user_id === me.id ? 'rooms' : 'members', { room_id: p.new.room_id });
