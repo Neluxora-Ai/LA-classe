@@ -21,7 +21,8 @@ code de classe : `demo`). Ouvre un 2ᵉ onglet et crée un 2ᵉ compte pour voir
    Puis une 2ᵉ requête avec [`supabase/v3.sql`](supabase/v3.sql) → **Run** (profil, réactions, réponses, messages privés, admin),
    puis une 3ᵉ avec [`supabase/v4.sql`](supabase/v4.sql) → **Run** (photo de profil, bannissement),
    puis une 4ᵉ avec [`supabase/v5.sql`](supabase/v5.sql) → **Run** (apparence, modification, épinglés, sondages, fichiers),
-   puis une 5ᵉ avec [`supabase/v6.sql`](supabase/v6.sql) → **Run** (profils complets, infos de la classe, « vu », sourdine, stickers).
+   puis une 5ᵉ avec [`supabase/v6.sql`](supabase/v6.sql) → **Run** (profils complets, infos de la classe, « vu », sourdine, stickers),
+   puis une 6ᵉ avec [`supabase/v7.sql`](supabase/v7.sql) → **Run** (nouveaux types de fichiers : audio, vidéo, archives, dossiers en .zip).
 3. **Authentication → Sign In / Providers** : **désactive « Allow new users to sign up »**.
    ⚠️ Indispensable : sinon n'importe qui pourrait créer un compte en contournant le code de classe.
 4. **Project Settings → API** : note
@@ -66,7 +67,10 @@ puis `npm run dev`.
 - **Messages épinglés** (📌) : jusqu'à 5 par salon, barre en haut du salon. Dans le salon commun, seuls les admins épinglent ; dans un groupe ou un message privé, tous les membres.
 - **Recherche** (🔍) : dans le salon ouvert ou dans tous tes salons ; un clic mène au message (même ancien).
 - **Sondages** (📊) : 2 à 6 choix, choix unique ou multiple, votes en direct (le survol d'un choix montre qui a voté), le créateur ou un admin peut le terminer.
-- **Fichiers** (📎 ou glisser-déposer) : PDF, Word, Excel, PowerPoint, OpenDocument, texte, CSV, ZIP, 10 Mo max. Stockés dans un bucket privé, téléchargés via des liens temporaires. Pas d'exécutables, ni HTML, ni SVG.
+- **Fichiers** (📎 ou glisser-déposer, plusieurs à la fois, 10 maximum) : PDF, Word, Excel, PowerPoint, OpenDocument, texte, Markdown, JSON, RTF, CSV, ZIP, 7z, RAR, audio (mp3, m4a, wav, ogg) et vidéo (mp4, webm), 10 Mo max chacun. Stockés dans un bucket privé, téléchargés via des liens temporaires. Pas d'exécutables, ni HTML, ni SVG, ni macros Office. Les fichiers audio se lisent directement dans le chat.
+- **Dossiers** (📁 ou glisser-déposer un dossier) : le dossier est compressé en un `.zip` dans ton navigateur puis envoyé comme un fichier (10 Mo au total, 300 fichiers max ; les fichiers système comme `.DS_Store`, `.git` ou `node_modules` sont écartés).
+- **Messages vocaux** (🎤) : 1 minute maximum, tu peux les réécouter avant d'envoyer. Le navigateur demande l'autorisation du micro. Enregistrés en `.weba` (Chrome, Firefox, Edge) ou `.m4a` (Safari).
+- **Application installable** : le site peut s'installer sur l'écran d'accueil (téléphone ou ordinateur), avec une icône et en plein écran (⚙ → « Application »). Il ouvre même sans réseau (la coquille seulement : les messages restent en direct). Fichiers : `public/manifest.webmanifest`, `public/sw.js`, `public/icons/` (régénérables avec `npm run icons`).
 - **Apparence (⚙ Profil)** : thème sombre / clair / automatique, couleur du site (9 thèmes ou n'importe quelle couleur), fond du chat, taille du texte. Réglages synchronisés sur le compte, donc retrouvés sur le téléphone et l'ordinateur.
 - **Fiche de profil** : clique sur un pseudo ou un avatar (messages, listes) pour voir surnom, statut, bio, centres d'intérêt, anniversaire et dernière connexion, avec un bouton « Écrire ».
   Tu les règles dans ⚙ → « Mon pseudo » / « Mes infos ». Tout est facultatif et visible des comptes de la classe.

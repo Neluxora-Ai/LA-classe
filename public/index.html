@@ -5,6 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>La Classe 🎒</title>
   <meta name="theme-color" content="#15131f">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Notre classe">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🎒%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/style.css">
   <script src="/js/theme.js"></script>
@@ -96,12 +102,29 @@
         <p id="sticker-error" class="error"></p>
       </div>
       <input type="file" id="sticker-file" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+      <div id="recorder" class="recorder" hidden>
+        <span class="rec-dot" id="rec-dot"></span>
+        <span id="rec-label" class="rec-label">Enregistrement…</span>
+        <span id="rec-time" class="rec-time">0:00</span>
+        <audio id="rec-preview" controls hidden></audio>
+        <span class="rec-actions">
+          <button type="button" id="rec-cancel" class="btn-ghost">Annuler</button>
+          <button type="button" id="rec-stop" class="btn-primary">■ Terminer</button>
+          <button type="button" id="rec-send" class="btn-primary" hidden>Envoyer ➤</button>
+        </span>
+      </div>
+      <p id="rec-error" class="error rec-error" hidden></p>
       <form id="composer" class="composer">
-        <button type="button" id="emoji-btn" class="icon-btn" title="Emojis">😊</button>
-        <button type="button" id="sticker-btn" class="icon-btn" title="Stickers">🎟</button>
-        <button type="button" id="img-btn" class="icon-btn" title="Envoyer une image ou un fichier (PDF, Word, Excel… 10 Mo max)">📎</button>
-        <button type="button" id="poll-btn" class="icon-btn" title="Créer un sondage">📊</button>
-        <input type="file" id="file" accept="image/png,image/jpeg,image/gif,image/webp,.pdf,.txt,.csv,.zip,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp" hidden>
+        <div class="tools">
+          <button type="button" id="emoji-btn" class="icon-btn" title="Emojis">😊</button>
+          <button type="button" id="sticker-btn" class="icon-btn" title="Stickers">🎟</button>
+          <button type="button" id="img-btn" class="icon-btn" title="Envoyer des images ou des fichiers (PDF, Word, audio… 10 Mo max chacun)">📎</button>
+          <button type="button" id="folder-btn" class="icon-btn" title="Envoyer un dossier entier (envoyé en .zip, 10 Mo max)">📁</button>
+          <button type="button" id="poll-btn" class="icon-btn" title="Créer un sondage">📊</button>
+          <button type="button" id="mic-btn" class="icon-btn" title="Enregistrer un message vocal (1 min max)">🎤</button>
+        </div>
+        <input type="file" id="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,.pdf,.txt,.csv,.zip,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.md,.json,.rtf,.7z,.rar,.mp3,.m4a,.wav,.ogg,.mp4,.webm" hidden>
+        <input type="file" id="folder" webkitdirectory multiple hidden>
         <input id="text" maxlength="1000" placeholder="Écris un message… (tu peux coller une image)" autocomplete="off">
         <button class="btn-primary send" type="submit">Envoyer</button>
       </form>
@@ -293,6 +316,12 @@
       <div class="field-label">Taille du texte</div>
       <div id="font-choice" class="seg"></div>
       <button type="button" id="appearance-reset" class="btn-ghost appearance-reset">Réinitialiser l'apparence</button>
+    </div>
+
+    <div class="profile-section">
+      <div class="field-label">Application</div>
+      <p id="install-text" class="hint"></p>
+      <button type="button" id="install-btn" class="btn-ghost" hidden>📲 Installer l'application</button>
     </div>
 
     <div class="field-label">Confidentialité</div>

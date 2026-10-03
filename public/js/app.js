@@ -2,7 +2,7 @@ import { createSupabaseBackend } from './backend-supabase.js';
 import { createDemoBackend } from './backend-demo.js';
 import {
   AVATAR_COLORS, BIG_EMOJIS, FILE_TYPES, MIN_PASSWORD, MONTHS, QUICK_REACTIONS, birthdayLabel, daysUntilBirthday, fileExt, fileIcon,
-  formatSize, isBigEmoji, passwordStrength, relTime, resizeAvatar, resizeSticker,
+  VOICE_MAX_SECS, dropEntries, formatSize, isAudioName, isBigEmoji, passwordStrength, readDropped, relTime, resizeAvatar, resizeSticker, zipFolder,
 } from './shared.js';
 
 const $ = (id) => document.getElementById(id);
@@ -448,6 +448,7 @@ async function switchRoom(r) {
   renderPinsBar();
   hideMentions();
   hidePanels();
+  cancelRecording(); // un message vocal en cours ne doit pas partir dans un autre salon
   reads.clear();
   renderMuteButton();
   renderRoomSub();
@@ -906,7 +907,53 @@ function addMessage(m) {
     poll.className = 'poll';
     bubble.append(poll);
   }
-  if (m.file_path) {
+  if (m.file_path && isAudioName(m.file_name)) {
+    // audio / message vocal : on l'écoute directement dans le chat
+    const card = document.createElement('div');
+    card.className = 'audio-card';
+    const head = document.createElement('div');
+    head.className = 'audio-head';
+    const ico = document.createElement('span');
+    ico.className = 'ico';
+    ico.textContent = /^Message vocal/.test(m.file_name) ? '🎤' : '🎧';
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = m.file_name.replace(/\.[^.]+$/, '');
+    const play = document.createElement('button');
+    play.type = 'button';
+    play.className = 'play-btn';
+    play.textContent = '▶ Écouter';
+    head.append(ico, nm, play);
+    const foot = document.createElement('span');
+    foot.className = 'sz';
+    foot.textContent = formatSize(m.file_size || 0);
+    card.append(head, foot);
+    play.onclick = guard(async () => {
+      const url = await b.fileUrl(m.file_path, m.file_name, { inline: true });
+      const audio = document.createElement('audio');
+      audio.controls = true;
+      audio.autoplay = true;
+      audio.src = url;
+      play.remove();
+      card.insertBefore(audio, foot); // le lecteur prend toute la largeur sous le titre
+      const dl = document.createElement('a');
+      dl.className = 'dl';
+      dl.textContent = 'Télécharger';
+      dl.href = '#';
+      dl.onclick = guard(async (e) => {
+        e.preventDefault();
+        const a = document.createElement('a');
+        a.href = await b.fileUrl(m.file_path, m.file_name);
+        a.download = m.file_name;
+        a.rel = 'noopener';
+        document.body.append(a);
+        a.click();
+        a.remove();
+      });
+      foot.append(' · ', dl);
+    });
+    bubble.append(card);
+  } else if (m.file_path) {
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'file-card';
@@ -1099,13 +1146,36 @@ const sendDocument = guard(async (file) => {
   $('toast').hidden = true;
 });
 // Image ou document : on choisit selon le type du fichier
-const sendPicked = (file) => {
+const sendPicked = async (file) => {
   if (!file) return;
-  if (file.type.startsWith('image/')) sendImage(file);
-  else sendDocument(file);
+  if (file.type.startsWith('image/')) await sendImage(file);
+  else await sendDocument(file);
 };
+// Plusieurs fichiers d'un coup : un message par fichier (10 maximum)
+const MAX_PICK = 10;
+const sendMany = async (files) => {
+  if (files.length > MAX_PICK) toast(`${files.length} fichiers choisis : je n'envoie que les ${MAX_PICK} premiers.`);
+  for (const file of files.slice(0, MAX_PICK)) await sendPicked(file);
+};
+// Un dossier : fabriqué en .zip dans le navigateur puis envoyé comme un fichier
+const sendFolder = guard(async (name, files) => {
+  toast(`Préparation du dossier « ${name} »…`);
+  await sendDocument(await zipFolder(name, files));
+});
 $('img-btn').onclick = () => $('file').click();
-$('file').onchange = (e) => { sendPicked(e.target.files[0]); e.target.value = ''; };
+$('file').onchange = (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  sendMany(files);
+};
+$('folder-btn').onclick = () => $('folder').click();
+$('folder').onchange = (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  if (!files.length) return;
+  const root = (files[0].webkitRelativePath || '').split('/')[0] || 'dossier';
+  sendFolder(root, files.map((f) => ({ path: f.webkitRelativePath || f.name, file: f })));
+};
 document.addEventListener('paste', (e) => {
   const file = [...(e.clipboardData?.files || [])].find((f) => f.type.startsWith('image/'));
   if (file && !$('app').hidden) sendImage(file);
@@ -1126,11 +1196,17 @@ chatEl.addEventListener('dragleave', () => {
   dragDepth = Math.max(0, dragDepth - 1);
   if (!dragDepth) chatEl.classList.remove('dragover');
 });
+const handleDropped = guard(async (entries) => {
+  const { files, folders } = await readDropped(entries);
+  if (!files.length && !folders.length) return;
+  for (const f of folders) await sendFolder(f.name, f.files);
+  await sendMany(files);
+});
 chatEl.addEventListener('drop', (e) => {
   e.preventDefault();
   dragDepth = 0;
   chatEl.classList.remove('dragover');
-  sendPicked(e.dataTransfer?.files?.[0]);
+  handleDropped(dropEntries(e.dataTransfer)); // à lire tout de suite : le navigateur vide la liste après le « drop »
 });
 function openLightbox(src) {
   $('lightbox').querySelector('img').src = src;
@@ -1389,6 +1465,7 @@ $('profile-btn').onclick = guard(async () => {
   renderColorChoice();
   renderAppearance();
   renderProfileInfo();
+  renderInstall();
   $('pref-sound').checked = prefs.sound;
   $('pref-desktop').checked = prefs.desktop && 'Notification' in window && Notification.permission === 'granted';
   renderDesktopHint();
@@ -2092,6 +2169,131 @@ $('sticker-file').onchange = async (e) => {
     $('sticker-error').textContent = err.message;
   }
 };
+
+// ---------- Messages vocaux ----------
+let rec = null; // enregistrement en cours : { stream, mr, chunks, started, type, timer, blob, url, secs, cancelled }
+const fmtDur = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+function recError(text = '') {
+  $('rec-error').textContent = text;
+  $('rec-error').hidden = !text;
+}
+function recUi(state) { // 'off' | 'recording' | 'review'
+  $('recorder').hidden = state === 'off';
+  $('rec-dot').classList.toggle('done', state === 'review');
+  $('rec-label').textContent = state === 'review' ? 'Écoute avant d\'envoyer' : 'Enregistrement…';
+  $('rec-stop').hidden = state !== 'recording';
+  $('rec-send').hidden = state !== 'review';
+  $('rec-preview').hidden = state !== 'review';
+}
+function resetRecorder() {
+  if (rec) {
+    clearInterval(rec.timer);
+    rec.stream?.getTracks().forEach((t) => t.stop());
+    if (rec.url) URL.revokeObjectURL(rec.url);
+  }
+  rec = null;
+  $('rec-preview').removeAttribute('src');
+  $('rec-time').textContent = '0:00';
+  recUi('off');
+}
+function cancelRecording() {
+  if (!rec) return;
+  rec.cancelled = true;
+  try {
+    if (rec.mr.state !== 'inactive') rec.mr.stop();
+  } catch {}
+  resetRecorder();
+}
+$('mic-btn').onclick = async () => {
+  if (rec) return;
+  recError('');
+  hidePanels();
+  try {
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error("Ton navigateur ne permet pas d'enregistrer un message vocal.");
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'].find((t) => MediaRecorder.isTypeSupported(t)) || '';
+    const mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    const r = { stream, mr, chunks: [], started: Date.now(), type: mr.mimeType || mime || 'audio/webm', timer: null, blob: null, url: null, secs: 0, cancelled: false };
+    rec = r;
+    mr.ondataavailable = (e) => e.data.size && r.chunks.push(e.data);
+    mr.onstop = () => {
+      clearInterval(r.timer);
+      if (r.cancelled || rec !== r) return;
+      r.secs = Math.max(1, Math.round((Date.now() - r.started) / 1000));
+      r.blob = new Blob(r.chunks, { type: r.type });
+      r.stream.getTracks().forEach((t) => t.stop());
+      if (r.blob.size < 800) {
+        resetRecorder();
+        return recError('Message vocal trop court : maintiens plus longtemps.');
+      }
+      r.url = URL.createObjectURL(r.blob);
+      $('rec-preview').src = r.url;
+      $('rec-time').textContent = fmtDur(r.secs);
+      recUi('review');
+    };
+    mr.start();
+    recUi('recording');
+    r.timer = setInterval(() => {
+      const s = (Date.now() - r.started) / 1000;
+      $('rec-time').textContent = `${fmtDur(s)} / ${fmtDur(VOICE_MAX_SECS)}`;
+      if (s >= VOICE_MAX_SECS && mr.state === 'recording') mr.stop(); // durée maximale atteinte
+    }, 250);
+  } catch (err) {
+    resetRecorder();
+    if (err?.name === 'NotAllowedError' || err?.name === 'SecurityError') {
+      recError("Le micro est bloqué : autorise-le dans les réglages du navigateur (icône 🔒 à gauche de l'adresse), puis réessaie.");
+    } else if (err?.name === 'NotFoundError') recError('Aucun micro détecté sur cet appareil.');
+    else recError(err.message || "Impossible d'enregistrer.");
+  }
+};
+$('rec-stop').onclick = () => {
+  if (rec?.mr.state === 'recording') rec.mr.stop();
+};
+$('rec-cancel').onclick = cancelRecording;
+$('rec-send').onclick = guard(async () => {
+  const r = rec;
+  if (!r?.blob) return;
+  const ext = r.type.includes('mp4') ? 'm4a' : r.type.includes('ogg') ? 'ogg' : 'weba';
+  const now = new Date();
+  const name = `Message vocal ${String(now.getHours()).padStart(2, '0')}h${String(now.getMinutes()).padStart(2, '0')}.${ext}`;
+  const file = new File([r.blob], name, { type: r.type.split(';')[0] });
+  resetRecorder();
+  await sendDocument(file);
+});
+
+// ---------- Application installable (PWA) ----------
+if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+let installPrompt = null;
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const isIos = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault(); // on propose notre propre bouton dans ⚙
+  installPrompt = e;
+  renderInstall();
+});
+window.addEventListener('appinstalled', () => {
+  installPrompt = null;
+  renderInstall();
+  toast('Application installée 🎉');
+});
+function renderInstall() {
+  const btn = $('install-btn');
+  const txt = $('install-text');
+  btn.hidden = true;
+  if (isStandalone()) txt.textContent = "✅ Tu utilises déjà l'application installée.";
+  else if (installPrompt) {
+    btn.hidden = false;
+    txt.textContent = "Ajoute le site à ton écran d'accueil : icône, plein écran, comme une vraie appli.";
+  } else if (isIos()) txt.textContent = "Sur iPhone / iPad : dans Safari, touche le bouton Partager (le carré avec une flèche), puis « Sur l'écran d'accueil ».";
+  else txt.textContent = "Sur ordinateur (Chrome, Edge) : icône d'installation à droite de la barre d'adresse, ou menu ⋮ puis « Installer ». Sur Android : menu ⋮ puis « Ajouter à l'écran d'accueil ».";
+}
+$('install-btn').onclick = guard(async () => {
+  if (!installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice;
+  installPrompt = null;
+  renderInstall();
+});
 
 // ---------- Panneau admin : comptes, suppression, bannissement ----------
 const dlgAdmin = $('dlg-admin');

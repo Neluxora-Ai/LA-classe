@@ -9,7 +9,10 @@ try { process.loadEnvFile('.env'); } catch {}
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const PORT = process.env.PORT || 3000;
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
+const TYPES = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml',
+  '.png': 'image/png', '.json': 'application/json', '.webmanifest': 'application/manifest+json',
+};
 const API = {
   '/api/register': (await import('./api/register.js')).default,
   '/api/rename': (await import('./api/rename.js')).default,

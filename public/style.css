@@ -429,3 +429,32 @@ select { width: auto; min-width: 90px; }
 .sticker-img { display: block; width: 140px; max-width: 100%; height: auto; max-height: 140px; object-fit: contain; }
 .msg.has-sticker .bubble, .msg.big-emoji .bubble { background: transparent !important; box-shadow: none; padding: 2px 4px; }
 .body.big { font-size: 3rem; line-height: 1.15; }
+
+/* ======================================================================
+   v7 : dossiers, audio / messages vocaux, application installable
+   ====================================================================== */
+.recorder { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 0 14px; padding: 10px 12px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line-2); }
+.rec-dot { width: 12px; height: 12px; border-radius: 50%; background: #ff4d4d; animation: pulse 1s infinite; flex-shrink: 0; }
+.rec-dot.done { animation: none; background: var(--muted); }
+.rec-label { font-weight: 600; }
+.rec-time { font-variant-numeric: tabular-nums; color: var(--muted); }
+.recorder audio { flex: 1; min-width: 160px; max-width: 320px; height: 36px; }
+.rec-actions { margin-left: auto; display: flex; gap: 8px; }
+.rec-actions .btn-primary, .rec-actions .btn-ghost { width: auto; padding: 8px 14px; }
+.rec-error { margin: 4px 14px 0; }
+.audio-card { display: flex; flex-direction: column; gap: 6px; background: var(--shade); border: 1px solid var(--line-2); border-radius: 12px; padding: 8px 12px; margin-top: 6px; min-width: min(280px, 70vw); }
+.audio-card .audio-head { display: flex; align-items: center; gap: 10px; }
+.audio-card .ico { font-size: 22px; }
+.audio-card .nm { font-weight: 600; overflow-wrap: anywhere; flex: 1; }
+.audio-card .sz { font-size: 12px; opacity: .75; }
+.audio-card audio { width: 100%; height: 36px; }
+.audio-card .play-btn { border: 0; border-radius: 99px; padding: 6px 12px; font-weight: 700; background: var(--mine); color: var(--on-accent); }
+.audio-card .dl { font-size: 12px; opacity: .8; color: inherit; text-decoration: underline; }
+.tools { display: contents; } /* sur ordinateur : les boutons restent sur la même ligne que la saisie */
+@media (max-width: 600px) {
+  /* sur téléphone : les boutons passent sur leur propre ligne, la saisie prend toute la largeur */
+  .composer { flex-wrap: wrap; row-gap: 2px; padding-left: 10px; padding-right: 10px; }
+  .tools { display: flex; flex: 0 0 100%; gap: 4px; justify-content: space-between; }
+  .tools .icon-btn { flex: 1; padding: 4px 0; font-size: 20px; }
+  #text { flex: 1 1 0; min-width: 0; }
+}

@@ -468,8 +468,9 @@ export function createSupabaseBackend({ url, key }) {
       fail(error);
       return { path, name: file.name.replace(/[/\\]/g, '_').slice(0, 120), size: file.size };
     },
-    async fileUrl(path, name) {
-      const { data, error } = await sb.storage.from('files').createSignedUrl(path, 600, { download: name });
+    // inline : pour écouter un audio dans la page ; sinon le fichier se télécharge
+    async fileUrl(path, name, { inline = false } = {}) {
+      const { data, error } = await sb.storage.from('files').createSignedUrl(path, 600, inline ? undefined : { download: name });
       fail(error);
       return data.signedUrl;
     },

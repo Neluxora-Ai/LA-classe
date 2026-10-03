@@ -18,7 +18,137 @@ export const FILE_TYPES = {
   odt: 'application/vnd.oasis.opendocument.text',
   ods: 'application/vnd.oasis.opendocument.spreadsheet',
   odp: 'application/vnd.oasis.opendocument.presentation',
+  md: 'text/markdown',
+  json: 'application/json',
+  rtf: 'application/rtf',
+  '7z': 'application/x-7z-compressed',
+  rar: 'application/vnd.rar',
+  mp3: 'audio/mpeg',
+  m4a: 'audio/mp4',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  weba: 'audio/webm', // enregistrement vocal fait dans le navigateur
+  mp4: 'video/mp4',
+  webm: 'video/webm',
 };
+export const FILE_ACCEPT = Object.keys(FILE_TYPES).map((e) => `.${e}`).join(',');
+export const AUDIO_EXT = ['mp3', 'm4a', 'wav', 'ogg', 'weba']; // lus directement dans le chat
+export const isAudioName = (name) => AUDIO_EXT.includes(fileExt(name));
+export const VOICE_MAX_SECS = 60;
+
+// ---------- Dossiers : on les envoie en un seul fichier .zip, fabriqué ici (sans compression) ----------
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+export function crc32(bytes) {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+// entries : [{ name: 'dossier/sous/fichier.txt', data: Uint8Array, mtime?: Date }] -> Blob (archive ZIP, stockage sans compression)
+export function buildZip(entries) {
+  const enc = new TextEncoder();
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  for (const e of entries) {
+    const name = enc.encode(e.name);
+    const d = e.mtime instanceof Date ? e.mtime : new Date();
+    const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+    const date = (Math.max(0, d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+    const crc = crc32(e.data);
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true);
+    local.setUint16(4, 20, true);
+    local.setUint16(6, 0x0800, true); // noms en UTF-8
+    local.setUint16(8, 0, true); // méthode 0 : stocké
+    local.setUint16(10, time, true);
+    local.setUint16(12, date, true);
+    local.setUint32(14, crc, true);
+    local.setUint32(18, e.data.length, true);
+    local.setUint32(22, e.data.length, true);
+    local.setUint16(26, name.length, true);
+    local.setUint16(28, 0, true);
+    parts.push(local.buffer, name, e.data);
+    const cd = new DataView(new ArrayBuffer(46));
+    cd.setUint32(0, 0x02014b50, true);
+    cd.setUint16(4, 20, true);
+    cd.setUint16(6, 20, true);
+    cd.setUint16(8, 0x0800, true);
+    cd.setUint16(10, 0, true);
+    cd.setUint16(12, time, true);
+    cd.setUint16(14, date, true);
+    cd.setUint32(16, crc, true);
+    cd.setUint32(20, e.data.length, true);
+    cd.setUint32(24, e.data.length, true);
+    cd.setUint16(28, name.length, true);
+    cd.setUint32(42, offset, true);
+    central.push(cd.buffer, name);
+    offset += 30 + name.length + e.data.length;
+  }
+  const cdSize = central.reduce((n, p) => n + (p.byteLength ?? p.length), 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, entries.length, true);
+  end.setUint16(10, entries.length, true);
+  end.setUint32(12, cdSize, true);
+  end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, end.buffer], { type: 'application/zip' });
+}
+const JUNK = /(^|\/)(\.DS_Store|Thumbs\.db|desktop\.ini|\.git|node_modules|__MACOSX)(\/|$)/;
+export const MAX_FOLDER_FILES = 300;
+// files : [{ path: 'dossier/a.txt', file: File }] -> File « dossier.zip » (refuse si trop gros ou trop de fichiers)
+export async function zipFolder(folderName, files) {
+  const kept = files.filter((f) => !JUNK.test(f.path));
+  if (!kept.length) throw new Error('Ce dossier est vide (ou ne contient que des fichiers système).');
+  if (kept.length > MAX_FOLDER_FILES) throw new Error(`Ce dossier contient ${kept.length} fichiers (${MAX_FOLDER_FILES} maximum).`);
+  const total = kept.reduce((n, f) => n + f.file.size, 0);
+  if (total > MAX_FILE) throw new Error(`Ce dossier fait ${formatSize(total)} : la limite est de ${formatSize(MAX_FILE)}. Envoie-le en plusieurs parties.`);
+  const entries = [];
+  for (const f of kept) {
+    const name = f.path.replace(/\\/g, '/').split('/').filter((s) => s && s !== '..' && s !== '.').join('/');
+    entries.push({ name, data: new Uint8Array(await f.file.arrayBuffer()), mtime: new Date(f.file.lastModified || Date.now()) });
+  }
+  const safe = folderName.replace(/[/\\:*?"<>|]/g, '_').slice(0, 100) || 'dossier';
+  return new File([buildZip(entries)], `${safe}.zip`, { type: 'application/zip' });
+}
+// Lit un dossier déposé par glisser-déposer (API FileSystemEntry). À appeler dès le « drop », avant tout await.
+export function dropEntries(dataTransfer) {
+  return [...(dataTransfer?.items || [])].map((i) => (i.kind === 'file' ? i.webkitGetAsEntry?.() || i.getAsFile() : null)).filter(Boolean);
+}
+async function walk(entry, prefix, out) {
+  if (entry.isFile) {
+    out.push({ path: prefix + entry.name, file: await new Promise((res, rej) => entry.file(res, rej)) });
+  } else if (entry.isDirectory) {
+    const reader = entry.createReader();
+    for (;;) {
+      const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+      if (!batch.length) break;
+      for (const child of batch) await walk(child, `${prefix}${entry.name}/`, out);
+    }
+  }
+}
+// -> { files: [File], folders: [{ name, files: [{ path, file }] }] }
+export async function readDropped(entries) {
+  const files = [];
+  const folders = [];
+  for (const e of entries) {
+    if (e instanceof File) files.push(e);
+    else if (e.isFile) files.push(await new Promise((res, rej) => e.file(res, rej)));
+    else if (e.isDirectory) {
+      const list = [];
+      await walk(e, '', list);
+      folders.push({ name: e.name, files: list });
+    }
+  }
+  return { files, folders };
+}
 export const fileExt = (name) => (String(name).split('.').pop() || '').toLowerCase();
 export const fileIcon = (name) => {
   const e = fileExt(name);
