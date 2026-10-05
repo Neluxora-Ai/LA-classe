@@ -16,6 +16,7 @@ const TYPES = {
 const API = {
   '/api/register': (await import('./api/register.js')).default,
   '/api/rename': (await import('./api/rename.js')).default,
+  '/api/cleanup': (await import('./api/cleanup.js')).default,
 };
 
 http.createServer(async (req, res) => {

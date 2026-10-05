@@ -458,3 +458,18 @@ select { width: auto; min-width: 90px; }
   .tools .icon-btn { flex: 1; padding: 4px 0; font-size: 20px; }
   #text { flex: 1 1 0; min-width: 0; }
 }
+
+/* ======================================================================
+   v8 : sécurité (double authentification, journal admin), limite de messages
+   ====================================================================== */
+.mfa-box { margin-top: 10px; }
+.mfa-qr { display: block; margin: 8px auto; background: #fff; padding: 8px; border-radius: 12px; }
+.mfa-secret { font-family: ui-monospace, Consolas, monospace; word-break: break-all; user-select: all; background: var(--bg); border-radius: 6px; padding: 2px 6px; }
+.mfa-cancel { margin-top: 8px; width: 100%; }
+#mfa-start, #mfa-disable, #logout-all { width: 100%; margin-top: 6px; }
+.retention-note { text-align: center; color: var(--muted); font-size: 12px; padding: 4px 12px 8px; margin: 0 auto; max-width: 520px; }
+.log-row { font-size: 13px; padding: 5px 8px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.log-row:last-child { border-bottom: 0; }
+.log-row .who { font-weight: 700; }
+.log-row .when { color: var(--muted); font-size: 11px; display: block; }
+.limit-warn { color: #f5c542; }

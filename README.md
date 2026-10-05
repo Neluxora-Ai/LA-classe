@@ -22,7 +22,8 @@ code de classe : `demo`). Ouvre un 2ᵉ onglet et crée un 2ᵉ compte pour voir
    puis une 3ᵉ avec [`supabase/v4.sql`](supabase/v4.sql) → **Run** (photo de profil, bannissement),
    puis une 4ᵉ avec [`supabase/v5.sql`](supabase/v5.sql) → **Run** (apparence, modification, épinglés, sondages, fichiers),
    puis une 5ᵉ avec [`supabase/v6.sql`](supabase/v6.sql) → **Run** (profils complets, infos de la classe, « vu », sourdine, stickers),
-   puis une 6ᵉ avec [`supabase/v7.sql`](supabase/v7.sql) → **Run** (nouveaux types de fichiers : audio, vidéo, archives, dossiers en .zip).
+   puis une 6ᵉ avec [`supabase/v7.sql`](supabase/v7.sql) → **Run** (nouveaux types de fichiers : audio, vidéo, archives, dossiers en .zip),
+   puis une 7ᵉ avec [`supabase/v8.sql`](supabase/v8.sql) → **Run** (limites, anti-flood, journal des admins, double authentification, canaux privés).
 3. **Authentication → Sign In / Providers** : **désactive « Allow new users to sign up »**.
    ⚠️ Indispensable : sinon n'importe qui pourrait créer un compte en contournant le code de classe.
 4. **Project Settings → API** : note
@@ -105,7 +106,26 @@ update public.profiles set is_admin = true where pseudo = 'LePseudo';
 ```
 (en mode démo, le premier compte créé est admin.)
 
+## Limites
+
+- **50 messages par conversation** : dès que le 51ᵉ arrive, le plus ancien est supprimé (messages privés, groupes et salon commun, chacun séparément). Les sondages, épinglés et réactions du message supprimé partent avec lui ; ses fichiers sont retirés du stockage par le nettoyage quotidien. Ça s'applique aux messages épinglés aussi.
+- **20 comptes maximum** : au-delà, l'inscription est refusée (« La classe est complète »). Les comptes déjà existants ne sont jamais supprimés automatiquement : un admin les retire depuis le panneau 🛡, qui affiche « Comptes : N / 20 ».
+- **Changer ces nombres** (Supabase → SQL Editor) :
+  ```sql
+  update public.app_limits set value = 30 where key = 'max_accounts';   -- comptes
+  update public.app_limits set value = 100 where key = 'keep_messages'; -- messages gardés par conversation
+  ```
+
 ## Sécurité
+
+- **Anti-abus** : 8 messages max en 10 secondes et 30 par minute par personne ; 20 réactions en 10 secondes ; 15 envois de fichiers par minute ; inscriptions limitées à 10 par heure et par connexion internet ; 10 essais ratés du code de classe par IP.
+- **Pseudos** : les pseudos qui imitent l'autorité (admin, modérateur, prof, système…) et ceux qui mélangent plusieurs alphabets (a latin + а cyrillique) sont refusés, pour éviter l'usurpation.
+- **Mots de passe** : 8 caractères minimum, refus des mots de passe trop courants (`password123`, `azertyuiop`…) et de ceux qui contiennent le pseudo. Après un changement de mot de passe, les autres appareils sont déconnectés ; ⚙ → « Déconnecter tous mes appareils » existe aussi.
+- **Double authentification (⚙ → Sécurité du compte)** : code à 6 chiffres d'une application (Google Authenticator, Microsoft Authenticator, Authy…). Pour un **admin qui l'a activée, les pouvoirs admin ne marchent plus sans le code**, même si quelqu'un connaît son mot de passe (c'est vérifié par la base, pas seulement par le site). Conseillée à tous les admins.
+- **Journal des admins** (panneau 🛡) : suppression de comptes et de messages d'autres personnes, bannissements, modifications des infos de la classe et des stickers. Visible seulement des admins ; les 500 dernières lignes sont gardées.
+- **Temps réel** : les canaux de présence et de « X écrit… » sont privés et ne transportent que des identifiants (jamais de pseudo). Pour aller plus loin, dans Supabase → Realtime → Settings, désactive « Allow public access ».
+- **Appels serveur** : `api/*` refuse les appels venus d'un autre site (contrôle de l'origine). Le nettoyage quotidien `api/cleanup.js` (tâche planifiée Vercel) est protégé par la variable secrète `CRON_SECRET` ; il supprime les fichiers du stockage qui ne servent plus.
+- **En-têtes** : CSP stricte (aucun script ni style en ligne), HSTS, `X-Frame-Options`, isolation des fenêtres (COOP / CORP), micro autorisé seulement pour le site lui-même.
 
 - Règles RLS Postgres : on ne lit/écrit que dans ses salons, jamais sous le nom d'un autre, on ne supprime que ses messages.
 - Images : bucket **privé**, 5 Mo, png/jpg/gif/webp seulement, liens signés temporaires, dossier par utilisateur.

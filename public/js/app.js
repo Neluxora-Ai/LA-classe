@@ -38,6 +38,7 @@ let mutedRooms = new Set(); // salons dont les notifications sont coupées
 let onlineNames = new Set(); // pseudos actuellement en ligne
 const reads = new Map(); // salon ouvert : id de la personne -> dernier message lu
 const lastMarked = {}; // salon -> dernier message que j'ai marqué comme lu
+let limits = { keep_messages: 50, max_accounts: 20 }; // limites de l'application (lues sur le serveur)
 let stickers = []; // stickers de la classe
 let stickerTab = 'emoji';
 
@@ -182,7 +183,20 @@ $('password').addEventListener('input', () => {
 });
 $('password2').addEventListener('input', updateMatch);
 
+let mfaPending = false; // connexion en cours : le mot de passe est bon, on attend le code de la double authentification
+function setMfaPending(on) {
+  mfaPending = on;
+  $('mfa-row').hidden = !on;
+  $('mfa-login-code').required = on;
+  $('auth-submit').textContent = on ? 'Valider le code 🔐' : isRegister ? 'Créer mon compte 🎉' : 'Entrer 🚀';
+  if (on) $('mfa-login-code').focus();
+}
 function setMode(register) {
+  if (mfaPending) {
+    b.cancelMfa?.();
+    $('mfa-login-code').value = '';
+    setMfaPending(false);
+  }
   isRegister = register;
   $('tab-login').classList.toggle('active', !register);
   $('tab-register').classList.toggle('active', register);
@@ -213,13 +227,18 @@ $('auth-form').addEventListener('submit', async (e) => {
   }
   $('auth-submit').disabled = true;
   try {
-    const user = isRegister
-      ? await b.register($('pseudo').value, $('password').value, $('code').value)
-      : await b.login($('pseudo').value, $('password').value);
+    const user = mfaPending
+      ? await b.loginMfa($('mfa-login-code').value) // 2e étape : code de la double authentification
+      : isRegister
+        ? await b.register($('pseudo').value, $('password').value, $('code').value)
+        : await b.login($('pseudo').value, $('password').value);
     $('password').value = '';
     $('password2').value = '';
+    $('mfa-login-code').value = '';
+    setMfaPending(false);
     await enterApp(user);
   } catch (err) {
+    if (err.mfa) setMfaPending(true); // mot de passe bon, il reste le code à 6 chiffres
     $('auth-error').textContent = err.message;
   } finally {
     $('auth-submit').disabled = false;
@@ -253,6 +272,7 @@ async function enterApp(user) {
   me = user;
   syncMe();
   loadAppearance();
+  limits = { ...limits, ...(await b.limits().catch(() => ({}))) };
   $('auth').hidden = true;
   $('app').hidden = false;
   $('admin-btn').hidden = !isAdmin();
@@ -538,6 +558,10 @@ async function showHistory({ minId = null } = {}) {
   msgById.clear();
   pollsByMsg.clear();
   lastMsg = null;
+  const note = document.createElement('div');
+  note.className = 'retention-note';
+  note.textContent = `ℹ️ Seuls les ${limits.keep_messages} derniers messages de cette conversation sont gardés : les plus anciens disparaissent.`;
+  box.append(note);
   if (!msgs.length) {
     const p = document.createElement('div');
     p.className = 'empty';
@@ -1466,6 +1490,7 @@ $('profile-btn').onclick = guard(async () => {
   renderAppearance();
   renderProfileInfo();
   renderInstall();
+  renderSecurity();
   $('pref-sound').checked = prefs.sound;
   $('pref-desktop').checked = prefs.desktop && 'Notification' in window && Notification.permission === 'granted';
   renderDesktopHint();
@@ -2261,6 +2286,75 @@ $('rec-send').onclick = guard(async () => {
   await sendDocument(file);
 });
 
+// ---------- Sécurité du compte : déconnexion partout, double authentification ----------
+let mfaFactor = null; // facteur en cours d'activation : { id, qr, secret }
+function mfaMsg(text, ok = false) {
+  $('mfa-msg').className = ok ? 'ok' : 'error';
+  $('mfa-msg').textContent = text;
+}
+async function renderSecurity() {
+  $('mfa-box').hidden = !b.mfaSupported;
+  $('mfa-enroll').hidden = true;
+  mfaMsg('');
+  mfaFactor = null;
+  if (!b.mfaSupported) return;
+  try {
+    const st = await b.mfaStatus();
+    $('mfa-status').textContent = st.enabled
+      ? '✅ Double authentification activée : un code de ton application est demandé à chaque connexion.'
+      : 'Désactivée. Conseillée surtout aux admins : une fois activée, leurs pouvoirs ne marchent plus sans le code, même si quelqu\'un connaît leur mot de passe.';
+    $('mfa-start').hidden = st.enabled;
+    $('mfa-disable').hidden = !st.enabled;
+    $('mfa-disable').dataset.id = st.id || '';
+  } catch (err) {
+    mfaMsg(err.message);
+  }
+}
+$('logout-all').onclick = guard(async () => {
+  if (!confirm('Déconnecter tous tes appareils, y compris celui-ci ? Tu devras te reconnecter partout avec ton mot de passe.')) return;
+  await b.logoutEverywhere();
+  location.reload();
+});
+$('mfa-start').onclick = guard(async () => {
+  mfaMsg('');
+  mfaFactor = await b.mfaEnroll();
+  $('mfa-qr').src = mfaFactor.qr;
+  $('mfa-secret').textContent = mfaFactor.secret;
+  $('mfa-code').value = '';
+  $('mfa-enroll').hidden = false;
+  $('mfa-start').hidden = true;
+  $('mfa-code').focus();
+});
+$('mfa-verify').onclick = async () => {
+  if (!mfaFactor) return;
+  try {
+    await b.mfaVerify(mfaFactor.id, $('mfa-code').value);
+    mfaFactor = null;
+    await renderSecurity();
+    mfaMsg('Double authentification activée ✅ Garde bien ton application : elle sera demandée à chaque connexion.', true);
+  } catch (err) {
+    mfaMsg(err.message);
+  }
+};
+$('mfa-cancel').onclick = async () => {
+  const f = mfaFactor;
+  mfaFactor = null;
+  try {
+    if (f) await b.mfaDisable(f.id);
+  } catch {}
+  await renderSecurity();
+};
+$('mfa-disable').onclick = async () => {
+  if (!confirm('Désactiver la double authentification ? Ton compte sera moins protégé.')) return;
+  try {
+    await b.mfaDisable($('mfa-disable').dataset.id);
+    await renderSecurity();
+    mfaMsg('Double authentification désactivée.', true);
+  } catch (err) {
+    mfaMsg(err.message);
+  }
+};
+
 // ---------- Application installable (PWA) ----------
 if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 let installPrompt = null;
@@ -2298,9 +2392,40 @@ $('install-btn').onclick = guard(async () => {
 // ---------- Panneau admin : comptes, suppression, bannissement ----------
 const dlgAdmin = $('dlg-admin');
 const adminError = (text = '') => ($('admin-error').textContent = text);
+async function renderAdminLog() {
+  let rows = [];
+  try {
+    rows = await b.adminLog();
+  } catch (err) {
+    adminError(err.message);
+  }
+  $('admin-log').replaceChildren(...rows.map((r) => {
+    const row = document.createElement('div');
+    row.className = 'log-row';
+    const who = document.createElement('span');
+    who.className = 'who';
+    who.textContent = r.admin_pseudo;
+    const when = document.createElement('span');
+    when.className = 'when';
+    when.textContent = `${new Date(r.at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}`;
+    row.append(who, ` · ${r.action}${r.target ? ` « ${r.target} »` : ''}${r.detail ? ` (${r.detail})` : ''}`, when);
+    return row;
+  }));
+}
 async function renderAdminPanel() {
   await b.refreshPeople();
   syncMe();
+  try {
+    limits = { ...limits, ...(await b.limits()) };
+  } catch {}
+  const n = b.people().length;
+  const lim = $('admin-limits');
+  lim.className = n > limits.max_accounts ? 'hint limit-warn' : 'hint';
+  lim.textContent = `Comptes : ${n} / ${limits.max_accounts}`
+    + (n >= limits.max_accounts ? " — la classe est complète : plus personne ne peut s'inscrire" : '')
+    + (n > limits.max_accounts ? ` (${n - limits.max_accounts} de trop : supprime des comptes pour redescendre sous la limite)` : '')
+    + ` · ${limits.keep_messages} messages gardés par conversation.`;
+  renderAdminLog();
   const refreshAll = async () => {
     await renderAdminPanel();
     updateMembersCount();

@@ -2,6 +2,7 @@
 // Le pseudo sert aussi à se connecter (l'e-mail technique du compte en est dérivé), donc il faut passer par le serveur.
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'node:crypto';
+import { hit, pseudoProblem, sameOrigin } from './_security.js';
 
 const PSEUDO_RE = /^[\p{L}\p{N}_\- ]{2,20}$/u;
 const COOLDOWN_H = 24; // un changement de pseudo par jour
@@ -13,6 +14,7 @@ const pseudoToEmail = (p) =>
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   if (req.method !== 'POST') return res.status(405).json({ error: 'Méthode non autorisée.' });
+  if (!sameOrigin(req)) return res.status(403).json({ error: 'Origine non autorisée.' });
 
   const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env;
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY)
@@ -25,11 +27,14 @@ export default async function handler(req, res) {
   if (typeof body?.pseudo !== 'string') return res.status(400).json({ error: 'Champs manquants.' });
   const name = body.pseudo.trim();
   if (!PSEUDO_RE.test(name)) return res.status(400).json({ error: 'Pseudo : 2 à 20 lettres, chiffres, espaces, - ou _.' });
+  const badName = pseudoProblem(name);
+  if (badName) return res.status(400).json({ error: badName });
 
   const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
   const { data: u, error: uErr } = await admin.auth.getUser(token);
   if (uErr || !u?.user) return res.status(401).json({ error: 'Session expirée, reconnecte-toi.' });
   const uid = u.user.id;
+  if (!(await hit(admin, `rename:${uid}`, 6, 3600))) return res.status(429).json({ error: 'Trop de tentatives, réessaie plus tard.' });
 
   const { data: me } = await admin.from('profiles').select('pseudo, pseudo_changed_at').eq('id', uid).maybeSingle();
   if (!me) return res.status(403).json({ error: 'Compte introuvable.' });

@@ -108,9 +108,26 @@ export function createSupabaseBackend({ url, key }) {
     }]));
   }
 
+  let pendingMfa = null; // facteur de double authentification en attente du code (connexion en cours)
+  async function needsSecondStep() {
+    const { data: aal } = await sb.auth.mfa.getAuthenticatorAssuranceLevel();
+    return !!aal && aal.nextLevel === 'aal2' && aal.currentLevel !== 'aal2';
+  }
+  async function verifyFactor(factorId, code) {
+    const { data: ch, error } = await sb.auth.mfa.challenge({ factorId });
+    fail(error);
+    const { error: e2 } = await sb.auth.mfa.verify({ factorId, challengeId: ch.id, code: String(code).replace(/\s+/g, '') });
+    if (e2) throw new Error('Code incorrect ou expiré. Réessaie avec le code actuel de ton application.');
+  }
+
   async function loadSession() {
     const { data } = await sb.auth.getSession();
     if (!data.session) return null;
+    // une session « à moitié connectée » (mot de passe saisi mais pas le code 2FA) ne donne pas accès au site
+    if (await needsSecondStep()) {
+      await sb.auth.signOut();
+      return null;
+    }
     await loadProfiles();
     const p = profiles.get(data.session.user.id);
     if (!p) {
@@ -142,20 +159,82 @@ export function createSupabaseBackend({ url, key }) {
     async login(pseudo, password) {
       const { error } = await sb.auth.signInWithPassword({ email: await pseudoToEmail(pseudo), password });
       if (error) throw new Error('Pseudo ou mot de passe incorrect.');
+      if (await needsSecondStep()) {
+        const { data: f } = await sb.auth.mfa.listFactors();
+        pendingMfa = f?.totp?.[0]?.id || null;
+        const e = new Error('Entre le code à 6 chiffres de ton application d\'authentification.');
+        e.mfa = true;
+        throw e;
+      }
       return loadSession();
+    },
+    // 2e étape de la connexion quand la double authentification est activée
+    async loginMfa(code) {
+      if (!pendingMfa) throw new Error('Session expirée : reconnecte-toi.');
+      await verifyFactor(pendingMfa, code);
+      pendingMfa = null;
+      return loadSession();
+    },
+    async cancelMfa() {
+      pendingMfa = null;
+      await sb.auth.signOut();
     },
 
     async logout() {
       this.stop();
       await sb.auth.signOut();
     },
+    // Déconnecte tous les appareils (utile si un téléphone est perdu ou si quelqu'un d'autre a eu accès au compte)
+    async logoutEverywhere() {
+      this.stop();
+      await sb.auth.signOut({ scope: 'global' });
+    },
 
     async changePassword(oldPassword, newPassword) {
       if (newPassword.length < MIN_PASSWORD) throw new Error(`Mot de passe : ${MIN_PASSWORD} caractères minimum.`);
-      const { error: e1 } = await sb.auth.signInWithPassword({ email: await pseudoToEmail(me.pseudo), password: oldPassword });
+      // On vérifie l'ancien mot de passe avec un client à part : la session en cours (et son niveau 2FA) reste intacte.
+      const probe = window.supabase.createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
+      const { error: e1 } = await probe.auth.signInWithPassword({ email: await pseudoToEmail(me.pseudo), password: oldPassword });
       if (e1) throw new Error('Mot de passe actuel incorrect.');
       const { error } = await sb.auth.updateUser({ password: newPassword });
       if (error) throw new Error(error.message || 'Impossible de changer le mot de passe.');
+      await sb.auth.signOut({ scope: 'others' }).catch(() => {}); // les autres appareils doivent se reconnecter avec le nouveau mot de passe
+    },
+
+    // Double authentification (application d'authentification : Google Authenticator, Authy, Microsoft Authenticator…)
+    mfaSupported: true,
+    async mfaStatus() {
+      const { data, error } = await sb.auth.mfa.listFactors();
+      fail(error);
+      const f = data.totp?.[0];
+      return { enabled: !!f, id: f?.id || null };
+    },
+    async mfaEnroll() {
+      const { data: all } = await sb.auth.mfa.listFactors();
+      for (const f of all?.all || []) if (f.status !== 'verified') await sb.auth.mfa.unenroll({ factorId: f.id }); // restes d'une activation abandonnée
+      const { data, error } = await sb.auth.mfa.enroll({ factorType: 'totp', friendlyName: `Notre classe ${new Date().toLocaleDateString('fr-FR')}` });
+      fail(error);
+      return { id: data.id, qr: data.totp.qr_code, secret: data.totp.secret };
+    },
+    async mfaVerify(factorId, code) {
+      await verifyFactor(factorId, code);
+      await sb.auth.refreshSession(); // le nouveau jeton porte le niveau « aal2 »
+    },
+    async mfaDisable(factorId) {
+      fail((await sb.auth.mfa.unenroll({ factorId })).error);
+    },
+
+    // Limites de l'application (50 messages par conversation, 20 comptes…)
+    async limits() {
+      const { data, error } = await sb.from('app_limits').select('key, value');
+      fail(error);
+      return Object.fromEntries(data.map((r) => [r.key, r.value]));
+    },
+    // Journal des actions des admins (visible des admins seulement)
+    async adminLog() {
+      const { data, error } = await sb.from('admin_log').select('admin_pseudo, action, target, detail, at').order('id', { ascending: false }).limit(40);
+      fail(error);
+      return data;
     },
 
     async setColor(color) {
@@ -225,8 +304,7 @@ export function createSupabaseBackend({ url, key }) {
       const out = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(out.error || 'Impossible de changer le pseudo.');
       await loadProfiles();
-      presenceChannel?.track({ pseudo: me.pseudo }); // les autres voient le nouveau pseudo en ligne
-      return out.pseudo;
+      return out.pseudo; // la présence passe par l'identifiant du compte : rien à mettre à jour
     },
     async touchLastSeen() {
       await sb.rpc('touch_last_seen');
@@ -524,15 +602,21 @@ export function createSupabaseBackend({ url, key }) {
         })
         .subscribe((status) => emit('status', status === 'SUBSCRIBED'));
 
+      // Canal PRIVÉ (comptes connectés seulement) et sans aucun nom dedans : seulement des identifiants,
+      // traduits en pseudos ici. Même si quelqu'un écoutait ce canal sans compte, il ne verrait pas qui est en ligne.
       presenceChannel = sb
-        .channel('presence', { config: { presence: { key: me.id } } })
-        .on('presence', { event: 'sync' }, () => {
-          const state = presenceChannel.presenceState();
-          emit('presence', Object.values(state).map((a) => a[0].pseudo).sort((a, b) => a.localeCompare(b)));
+        .channel('presence-v2', { config: { private: true, presence: { key: me.id } } })
+        .on('presence', { event: 'sync' }, async () => {
+          const ids = Object.values(presenceChannel.presenceState()).map((a) => a[0]?.uid).filter(Boolean);
+          if (ids.some((id) => !profiles.has(id))) await loadProfiles().catch(() => {});
+          emit('presence', ids.map((id) => profiles.get(id)?.pseudo).filter(Boolean).sort((a, b) => a.localeCompare(b)));
         })
-        .on('broadcast', { event: 'typing' }, ({ payload }) => emit('typing', payload))
+        .on('broadcast', { event: 'typing' }, ({ payload }) => {
+          const pseudo = profiles.get(payload?.uid)?.pseudo;
+          if (pseudo) emit('typing', { room_id: payload.room_id, pseudo });
+        })
         .subscribe(async (status) => {
-          if (status === 'SUBSCRIBED') await presenceChannel.track({ pseudo: me.pseudo });
+          if (status === 'SUBSCRIBED') await presenceChannel.track({ uid: me.id });
         });
     },
 
@@ -543,7 +627,7 @@ export function createSupabaseBackend({ url, key }) {
     },
 
     typing(roomId) {
-      presenceChannel?.send({ type: 'broadcast', event: 'typing', payload: { room_id: roomId, pseudo: me.pseudo } });
+      presenceChannel?.send({ type: 'broadcast', event: 'typing', payload: { room_id: roomId, uid: me.id } });
     },
   };
 }

@@ -7,6 +7,8 @@ const KEY = 'classe-demo-v1';
 const SESSION = 'classe-demo-session'; // sessionStorage : un onglet = un utilisateur
 const COMMON = 'common';
 const DEMO_FILE_MAX = 1024 * 1024; // 1 Mo en démo (localStorage)
+const KEEP_MESSAGES = 50; // 50 messages gardés par conversation
+const MAX_ACCOUNTS = 20;
 
 export function createDemoBackend() {
   const { on, emit } = mkEmitter();
@@ -37,6 +39,7 @@ export function createDemoBackend() {
     s.mutes ||= []; // { room_id, user_id }
     s.stickers ||= []; // { id, name, path (data URL), active }
     s.classInfo ||= {};
+    s.adminLog ||= [];
     return s;
   };
   const save = (s) => localStorage.setItem(KEY, JSON.stringify(s));
@@ -98,6 +101,20 @@ export function createDemoBackend() {
     });
   };
 
+  // 50 messages maximum par conversation : on retire les plus anciens, et on dit lesquels
+  const prune = (s, roomId) => {
+    const ids = s.messages.filter((m) => m.room_id === roomId).map((m) => m.id).sort((a, b) => a - b);
+    const drop = new Set(ids.slice(0, Math.max(0, ids.length - KEEP_MESSAGES)));
+    if (drop.size) dropMessages(s, (m) => drop.has(m.id));
+    return [...drop];
+  };
+  const announceDropped = (ids) => ids.forEach((id) => {
+    emit('deleted', { id });
+    ping({ t: 'deleted', id });
+  });
+  const logAdmin = (s, action, target, detail = null) =>
+    s.adminLog.unshift({ admin_pseudo: me.pseudo, action, target, detail, at: new Date().toISOString() });
+
   bc.onmessage = ({ data }) => {
     if (!me || data.from === clientId) return;
     const s = load();
@@ -139,6 +156,7 @@ export function createDemoBackend() {
       if (!PSEUDO_RE.test(pseudo)) throw new Error('Pseudo : 2 à 20 lettres, chiffres, espaces, - ou _.');
       if (password.length < MIN_PASSWORD) throw new Error(`Mot de passe : ${MIN_PASSWORD} caractères minimum.`);
       const s = load();
+      if (s.users.length >= MAX_ACCOUNTS) throw new Error(`La classe est complète (${MAX_ACCOUNTS} comptes maximum). Demande à un admin.`);
       if (s.bans.some((x) => x.pseudo_key === pseudo.toLowerCase())) throw new Error('Ce pseudo a été banni de la classe.');
       if (s.users.some((u) => u.pseudo.toLowerCase() === pseudo.toLowerCase())) throw new Error('Ce pseudo est déjà pris.');
       s.users.push({ id: crypto.randomUUID(), pseudo, password, color: '', is_admin: s.users.length === 0, settings: {} });
@@ -155,6 +173,17 @@ export function createDemoBackend() {
     async logout() {
       this.stop();
       sessionStorage.removeItem(SESSION);
+    },
+    async logoutEverywhere() {
+      return this.logout();
+    },
+    mfaSupported: false, // la double authentification n'existe qu'avec le vrai serveur
+    async limits() {
+      return { max_accounts: MAX_ACCOUNTS, keep_messages: KEEP_MESSAGES };
+    },
+    async adminLog() {
+      if (!userOf(load(), me.id)?.is_admin) throw new Error('Interdit.');
+      return load().adminLog.slice(0, 40);
     },
     async changePassword(oldPassword, newPassword) {
       if (newPassword.length < MIN_PASSWORD) throw new Error(`Mot de passe : ${MIN_PASSWORD} caractères minimum.`);
@@ -205,13 +234,18 @@ export function createDemoBackend() {
       if (target.is_admin) throw new Error('Impossible de bannir un admin.');
       s.bans = s.bans.filter((x) => x.pseudo_key !== target.pseudo.toLowerCase());
       s.bans.unshift({ pseudo_key: target.pseudo.toLowerCase(), pseudo: target.pseudo, reason: (reason || '').slice(0, 200), banned_at: new Date().toISOString() });
+      logAdmin(s, 'bannir', target.pseudo, (reason || '').slice(0, 120));
       save(s);
       await this.kick(userId);
+      const s2 = load();
+      s2.adminLog = s2.adminLog.filter((l, i) => !(i === 0 && l.action === 'supprimer le compte' && l.target === target.pseudo)); // le ban inclut déjà la suppression
+      save(s2);
     },
     async unban(pseudoKey) {
       const s = load();
       if (!userOf(s, me.id)?.is_admin) throw new Error('Interdit.');
       s.bans = s.bans.filter((x) => x.pseudo_key !== pseudoKey.toLowerCase());
+      logAdmin(s, 'débannir', pseudoKey);
       save(s);
     },
     async banned() {
@@ -411,6 +445,7 @@ export function createDemoBackend() {
       if (!userOf(s, me.id)?.is_admin) throw new Error('Interdit.');
       if (userId === me.id) throw new Error("Tu ne peux pas t'exclure toi-même.");
       if (userOf(s, userId)?.is_admin) throw new Error("Impossible d'exclure un admin.");
+      logAdmin(s, 'supprimer le compte', pseudoOf(s, userId));
       s.users = s.users.filter((u) => u.id !== userId);
       s.members = s.members.filter((m) => m.user_id !== userId);
       dropMessages(s, (m) => m.user_id === userId);
@@ -437,9 +472,11 @@ export function createDemoBackend() {
         edited_at: null, file_path: file?.path ?? null, file_name: file?.name ?? null, file_size: file?.size ?? null, sticker_id: sticker,
       };
       s.messages.push(msg);
+      const dropped = prune(s, roomId);
       save(s);
       emit('message', view(s, msg));
       ping({ t: 'message', msg });
+      announceDropped(dropped);
     },
     async editMessage(id, text) {
       const s = load();
@@ -520,9 +557,11 @@ export function createDemoBackend() {
         id: crypto.randomUUID(), message_id: msg.id, room_id: roomId, created_by: me.id, question, multiple: !!multiple, closed: false,
         options: opts.map((label) => ({ id: crypto.randomUUID(), label })),
       });
+      const dropped = prune(s, roomId);
       save(s);
       emit('message', view(s, msg));
       ping({ t: 'message', msg });
+      announceDropped(dropped);
       return msg.id;
     },
     async votePoll(pollId, optionId, on) {

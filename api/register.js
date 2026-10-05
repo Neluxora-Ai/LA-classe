@@ -2,6 +2,7 @@
 // Les inscriptions publiques de Supabase doivent être DÉSACTIVÉES : c'est cette route qui crée les comptes.
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'node:crypto';
+import { clientIp, hit, pseudoProblem, sameOrigin, weakPassword } from './_security.js';
 
 const PSEUDO_RE = /^[\p{L}\p{N}_\- ]{2,20}$/u;
 const MAX_FAILS = 10; // essais ratés par IP
@@ -16,6 +17,7 @@ const pseudoToEmail = (p) =>
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   if (req.method !== 'POST') return res.status(405).json({ error: 'Méthode non autorisée.' });
+  if (!sameOrigin(req)) return res.status(403).json({ error: 'Origine non autorisée.' });
 
   const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, CLASS_CODE } = process.env;
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !CLASS_CODE)
@@ -27,7 +29,7 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Champs manquants.' });
 
   const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
-  const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'inconnu').split(',')[0].trim();
+  const ip = clientIp(req);
 
   // Anti-bruteforce du code de classe
   const since = new Date(Date.now() - WINDOW_MIN * 60_000).toISOString();
@@ -48,9 +50,22 @@ export default async function handler(req, res) {
   const name = pseudo.trim();
   if (!PSEUDO_RE.test(name)) return res.status(400).json({ error: 'Pseudo : 2 à 20 lettres, chiffres, espaces, - ou _.' });
   if (password.length < 8 || password.length > 72) return res.status(400).json({ error: 'Mot de passe : entre 8 et 72 caractères.' });
+  const badName = pseudoProblem(name);
+  if (badName) return res.status(400).json({ error: badName });
+  const weak = weakPassword(password, name);
+  if (weak) return res.status(400).json({ error: weak });
 
   const { data: banned } = await admin.from('banned_users').select('pseudo_key').eq('pseudo_key', name.toLowerCase()).maybeSingle();
   if (banned) return res.status(403).json({ error: 'Ce pseudo a été banni de la classe.' });
+
+  // Nombre de comptes maximum (réglable : table app_limits)
+  const { data: lim } = await admin.from('app_limits').select('value').eq('key', 'max_accounts').maybeSingle();
+  const max = lim?.value ?? 20;
+  const { count: accounts } = await admin.from('profiles').select('id', { count: 'exact', head: true });
+  if ((accounts ?? 0) >= max) return res.status(403).json({ error: `La classe est complète (${max} comptes maximum). Demande à un admin.` });
+
+  // Au plus 10 comptes créés par heure depuis une même connexion (assez large pour une classe sur le même Wi-Fi)
+  if (!(await hit(admin, `reg:${ip}`, 10, 3600))) return res.status(429).json({ error: 'Trop d\'inscriptions depuis cette connexion, réessaie plus tard.' });
 
   const { data, error } = await admin.auth.admin.createUser({
     email: pseudoToEmail(name),
@@ -68,6 +83,8 @@ export default async function handler(req, res) {
   if (pErr) {
     await admin.auth.admin.deleteUser(data.user.id);
     if (pErr.code === '23505') return res.status(409).json({ error: 'Ce pseudo est déjà pris.' });
+    if (/complète/i.test(pErr.message)) return res.status(403).json({ error: `La classe est complète (${max} comptes maximum). Demande à un admin.` });
+    if (/réservé/i.test(pErr.message)) return res.status(400).json({ error: 'Ce pseudo est réservé.' });
     console.error('profile', pErr);
     return res.status(500).json({ error: 'Impossible de créer le profil.' });
   }

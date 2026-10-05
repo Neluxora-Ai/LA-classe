@@ -42,6 +42,9 @@
           <span id="match-text" class="hint"></span>
         </label>
         <label id="code-label" hidden>Code de classe<input id="code" placeholder="demande-le à celui qui a créé le site" autocomplete="off"></label>
+        <label id="mfa-row" hidden>Code de la double authentification
+          <input id="mfa-login-code" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" autocomplete="one-time-code" placeholder="123456">
+        </label>
         <p id="auth-error" class="error" role="alert"></p>
         <button id="auth-submit" class="btn-primary" type="submit">Entrer 🚀</button>
       </form>
@@ -258,10 +261,13 @@
   <!-- Panneau admin -->
   <dialog id="dlg-admin">
     <h3>Panneau admin 🛡</h3>
+    <p id="admin-limits" class="hint"></p>
     <div class="field-label">Comptes</div>
     <div id="admin-users" class="people"></div>
     <div class="field-label">Pseudos bannis <span class="hint">(ils ne peuvent plus créer de compte)</span></div>
     <div id="admin-banned" class="people"></div>
+    <div class="field-label">Journal des actions des admins <span class="hint">(les 40 dernières)</span></div>
+    <div id="admin-log" class="list-box"></div>
     <p id="admin-error" class="error"></p>
     <div class="dlg-actions">
       <button type="button" class="btn-ghost" data-close>Fermer</button>
@@ -322,6 +328,27 @@
       <div class="field-label">Application</div>
       <p id="install-text" class="hint"></p>
       <button type="button" id="install-btn" class="btn-ghost" hidden>📲 Installer l'application</button>
+    </div>
+
+    <div class="profile-section" id="security-section">
+      <div class="field-label">Sécurité du compte</div>
+      <button type="button" id="logout-all" class="btn-ghost">🔒 Déconnecter tous mes appareils</button>
+      <div id="mfa-box" class="mfa-box" hidden>
+        <p id="mfa-status" class="hint"></p>
+        <button type="button" id="mfa-start" class="btn-ghost">🛡 Activer la double authentification</button>
+        <div id="mfa-enroll" hidden>
+          <p class="hint">1. Dans une application d'authentification (Google Authenticator, Microsoft Authenticator, Authy…), scanne ce QR code.<br>2. Entre le code à 6 chiffres qu'elle affiche.</p>
+          <img id="mfa-qr" class="mfa-qr" alt="QR code à scanner" width="180" height="180">
+          <p class="hint">Ou saisis ce code à la main : <code id="mfa-secret" class="mfa-secret"></code></p>
+          <div class="inline-form">
+            <input id="mfa-code" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" autocomplete="one-time-code" placeholder="123456" aria-label="Code à 6 chiffres">
+            <button type="button" id="mfa-verify" class="btn-ghost">Activer</button>
+          </div>
+          <button type="button" id="mfa-cancel" class="btn-ghost mfa-cancel">Annuler</button>
+        </div>
+        <button type="button" id="mfa-disable" class="btn-danger" hidden>Désactiver la double authentification</button>
+        <p id="mfa-msg" class="error"></p>
+      </div>
     </div>
 
     <div class="field-label">Confidentialité</div>
